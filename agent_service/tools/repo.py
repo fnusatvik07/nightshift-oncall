@@ -37,6 +37,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 
@@ -59,6 +60,31 @@ ROOT = pathlib.Path(os.environ.get("ONCALL_REPO_PATH", str(PROJECT))).expanduser
 WRITABLE = ("pipelines", "signal_service", "signals", "agent_service")
 
 TIMEOUT = 90
+
+
+def pushing_allowed() -> tuple[bool, str]:
+    """May this process push a branch and open a pull request?
+
+    This exists because it went wrong. The concurrency tests call propose() for
+    real, ONCALL_REPO_PATH pointed at a live GitHub repository, and running the
+    test suite opened seven real pull requests on it.
+
+    That is the same class of bug this project is about: a thing that looked
+    safe locally had a side effect somewhere else, and nothing failed. So the
+    guard is two independent checks rather than one, because the interesting
+    question is not "did I mean to push" but "can this process push at all".
+
+        ONCALL_ALLOW_PUSH=0    an explicit switch, set by conftest and by CI
+        pytest is imported     a test run can never reach the network, whatever
+                               the environment happens to say
+
+    A test that can open a pull request is not a test, it is a deployment.
+    """
+    if os.environ.get("ONCALL_ALLOW_PUSH", "1").lower() in ("0", "false", "no"):
+        return False, "pushing is disabled by ONCALL_ALLOW_PUSH"
+    if "pytest" in sys.modules:
+        return False, "this is a test run, so nothing is pushed"
+    return True, ""
 
 
 def _git(*args: str, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess:
@@ -121,6 +147,9 @@ class Proposal:
             lines.append(f"pull request: {self.pr_url}")
         elif self.pushed:
             lines.append("branch pushed, but no pull request was opened")
+        elif self.reason:
+            lines.append(f"no pull request: {self.reason}. "
+                         f"The change is at {self.patch_path}")
         else:
             lines.append(f"no remote, so no pull request. Patch saved at {self.patch_path}")
         return "\n".join(lines)
@@ -215,8 +244,11 @@ def propose(breach_id: str, summary: str, rationale: str, path: str,
         patch.write_text(out.diff)
         out.patch_path = str(patch)
 
-        # ── push and raise a pull request, if there is anywhere to push to ──
-        if remote_url():
+        # ── push and raise a pull request, if that is allowed and possible ──
+        allowed, why_not = pushing_allowed()
+        if not allowed:
+            out.reason = why_not
+        elif remote_url():
             pushed = _git("push", "-u", "origin", branch, cwd=work)
             out.pushed = pushed.returncode == 0
             if out.pushed:

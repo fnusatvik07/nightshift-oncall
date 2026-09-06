@@ -330,6 +330,30 @@ in the architecture, and it is not an optimisation.
 Three tests hold it in place, including one that runs three proposals
 concurrently and asserts every commit is non empty.
 
+### And a second incident, from the tests themselves
+
+Those concurrency tests call the real `propose()`. `ONCALL_REPO_PATH` pointed at
+a live GitHub repository, so **running the test suite opened seven real pull
+requests on it**, titled `C1`, `C2` and `x`.
+
+Nothing failed. The tests passed. The side effect was somewhere else entirely,
+which is the exact shape this project spends eighteen notebooks warning about,
+committed by the project, twice.
+
+Pushing is now blocked by two independent checks:
+
+```python
+ONCALL_ALLOW_PUSH=0    an explicit switch, set by conftest and by CI
+"pytest" in sys.modules  a test run cannot reach the network regardless
+```
+
+Two rather than one on purpose: either alone would have prevented it, and
+relying on one of them is how it happened. A proposal made during a test still
+branches and commits, so the tool is still exercised; it just cannot leave the
+machine.
+
+> **A test that can open a pull request is not a test, it is a deployment.**
+
 ---
 
 ## Cost, roughly

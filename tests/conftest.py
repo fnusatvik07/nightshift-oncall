@@ -12,7 +12,18 @@ teaching everybody to ignore a red suite.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Nothing in a test run may push a branch or open a pull request.
+#
+# This is set before anything imports the agent tools, because the tests call
+# the real propose() and the repository it targets is configurable. It was not
+# always here: a test run once opened seven pull requests on a live GitHub
+# repository, which is exactly the kind of quiet side effect this project
+# spends eighteen notebooks warning about.
+os.environ["ONCALL_ALLOW_PUSH"] = "0"
 
 
 def _warehouse_reachable() -> bool:

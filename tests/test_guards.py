@@ -17,6 +17,7 @@ commit.
 from __future__ import annotations
 
 import pathlib
+import subprocess
 
 import pytest
 
@@ -196,3 +197,47 @@ def test_run_pipeline_allows_exactly_the_eight():
     from agent_service.tools.verify import ALLOWED
     assert len(ALLOWED) == 8
     assert all(n.startswith("p") for n in ALLOWED)
+
+
+# ── a test run cannot reach a real repository ──────────────────────────────
+
+def test_a_test_run_cannot_push():
+    """The guard that stops a test suite opening pull requests on a live repo.
+
+    Both halves are checked, because the point of two independent checks is
+    that either one alone would have been enough to prevent the incident, and
+    relying on one of them is how it happened.
+    """
+    allowed, why = repo.pushing_allowed()
+    assert not allowed
+    assert why
+
+
+def test_the_env_switch_alone_would_stop_it(monkeypatch):
+    monkeypatch.setenv("ONCALL_ALLOW_PUSH", "0")
+    assert not repo.pushing_allowed()[0]
+
+
+def test_pytest_being_loaded_alone_would_stop_it(monkeypatch):
+    """Even with the switch on, a test run still refuses to push."""
+    monkeypatch.setenv("ONCALL_ALLOW_PUSH", "1")
+    allowed, why = repo.pushing_allowed()
+    assert not allowed
+    assert "test run" in why
+
+
+def test_a_proposal_in_a_test_commits_but_does_not_push(tmp_path):
+    """The branch and commit still happen, so the tool is still exercised."""
+    result = repo.propose(
+        breach_id="NOPUSH", summary="x", rationale="x",
+        path="signals/board.py",
+        old_string="Z_THRESHOLD = 4.0", new_string="Z_THRESHOLD = 4.9",
+        artifacts=tmp_path)
+    try:
+        assert result.ok
+        assert result.commit
+        assert not result.pushed
+        assert result.pr_url == ""
+    finally:
+        subprocess.run(["git", "branch", "-D", result.branch],
+                       cwd=repo.ROOT, capture_output=True)

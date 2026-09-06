@@ -315,11 +315,15 @@ but whether it compiles is a fact. Each proposal is applied in its **own git
 worktree**, so two investigations cannot see each other's files and the tree you
 are sitting in is never touched.
 
-**187 tests hold those guards in place**, and they need no database:
+**191 tests hold those guards in place**, and they need no database:
 
 ```bash
 pytest
 ```
+
+The suite cannot reach a real repository: pushing is blocked both by an explicit
+switch and by detecting that a test is running. That guard exists because the
+tests once opened seven pull requests on a live repo.
 
 The pull request target is configurable, because in a real estate the pipelines
 live in their own repository with their own reviewers:
