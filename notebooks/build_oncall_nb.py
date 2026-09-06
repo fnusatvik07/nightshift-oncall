@@ -1267,3 +1267,319 @@ n.md("""
 - From a field moving to a page with an owner on it: **nobody typed anything**
 """)
 n.save()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+n = NB("19-the-code-walked-through.ipynb")
+n.md("""
+# 19 · The code, walked through
+
+Eighteen notebooks built things. This one is different: **nothing new is built
+here.** It is a guided tour of the code you have been running, in the order the
+files actually depend on each other.
+
+Use it when you have finished the course and want to change something, or when
+you are about to explain the project to somebody else.
+
+Every cell prints real source out of real files. Nothing is pasted, so nothing
+can drift.
+""")
+n.code("""import sys; sys.path.insert(0, '..')
+import inspect, pathlib, subprocess
+
+ROOT = pathlib.Path('..').resolve()
+
+def show(obj, lines=None):
+    \"\"\"Print the real source of a real function or class.\"\"\"
+    src = inspect.getsource(obj)
+    print(src if lines is None else '\\n'.join(src.splitlines()[:lines]))
+
+def head(path, n=30):
+    \"\"\"Print the top of a file, which is where its docstring lives.\"\"\"
+    text = (ROOT / path).read_text().splitlines()[:n]
+    print(f'--- {path} ---')
+    print('\\n'.join(text))
+
+print('project root:', ROOT)""")
+n.md("""
+---
+
+## The shape, in one cell
+
+Six things, and only two of them are the subject of this course.
+""")
+n.code("""LAYOUT = [
+    ('pipelines/',      'THE WAREHOUSE. Eight pipelines, one per source.'),
+    ('seed/',           'Generates the world all six systems describe.'),
+    ('events/',         'ONE FILE. The record both services agree on.'),
+    ('signal_service/', 'SERVICE ONE. Thirteen KPIs, a clock, an API.'),
+    ('agent_service/',  'SERVICE TWO. Five agents and their toolbox.'),
+    ('tests/',          'What the project CLAIMS, written as assertions.'),
+]
+for folder, what in LAYOUT:
+    files = sorted(p.name for p in (ROOT / folder).glob('*.py')
+                   if '__pycache__' not in str(p))
+    print(f'{folder:18} {what}')
+    print(f'{"":18} {", ".join(files)}\\n')""")
+n.md("""
+---
+
+# Part one · the file both services depend on
+
+Start here, always. It is the smallest file in the project and it defines the
+only thing that crosses between the two services.
+""")
+n.code("""head('events/contract.py', 14)""")
+n.md("""
+### Why it lives in a package neither service owns
+
+The moment one side owns the shape of the record, the other side is a client
+rather than a peer, and changing it becomes a negotiation.
+
+Two records are defined in here. Read the second one's docstring out loud in
+class: it contains the arithmetic that justifies the whole grouping feature.
+""")
+n.code("""from events.contract import Incident
+print(inspect.getdoc(Incident))""")
+n.md("""
+---
+
+# Part two · the signal board, file by file
+
+Five files, and each one only needs the one before it.
+
+```
+kpis.py        the catalogue. What is watched, and by whom
+evaluate.py    a KPI becomes a reading; a reading becomes a verdict
+correlate.py   many breaches become one incident
+emit.py        record it, THEN ring the doorbell
+scheduler.py   the clock
+```
+
+## kpis.py · what a KPI is, and what it is not
+""")
+n.code("""head('signal_service/kpis.py', 20)""")
+n.md("""
+**That distinction is the spine of the service.** Everything else follows from
+it: a KPI cannot fire, a signal can, and the difference is a baseline somebody
+had to sit down and write.
+
+Now look at one entry. Six fields, and the one people skip is `owner`.
+""")
+n.code("""from signal_service.kpis import get, CATALOGUE
+k = get('surge_coverage_pct')
+for field in ('name', 'title', 'owner', 'watches', 'unit',
+              'judgement', 'baseline', 'tolerance', 'watch_direction'):
+    print(f'  {field:16} {getattr(k, field)}')
+print(f'\\n  means:\\n    {k.means}')""")
+n.md("""
+### The two things to point at when you teach this
+
+**`owner` is a team that exists.** A breach with no name attached is a number on
+a screen everybody assumes somebody else is looking at.
+
+**`tolerance` is 1, not 5.** In normal operation this number is exactly 100.0,
+because the pipeline holds a record it cannot read rather than writing a null.
+So any drop is real, and a generous tolerance would let a release move a field
+and stay under the bar for weeks.
+
+## evaluate.py · why measuring and judging are separate steps
+""")
+n.code("""from signal_service import evaluate as ev
+print(inspect.getdoc(ev))""")
+n.md("""
+And the line that took twelve KPIs down until it was found:
+""")
+n.code("""src = inspect.getsource(ev.read)
+print(src[src.index('    except Exception as e:'):])""")
+n.md("""
+> **One poison KPI must not block the rest**, which is the same rule as one
+> poison message on a topic.
+
+## correlate.py · the rules that stop six pages for one cause
+""")
+n.code("""from signal_service import correlate
+print(inspect.getdoc(correlate))""")
+n.code("""show(correlate.group)""")
+n.md("""
+### Read the order of the rules
+
+Rule 2 is the one that earns its keep. If the pipeline did not run, then rides,
+revenue and coverage are all wrong **because of that**, and investigating them
+separately is five wasted investigations that end at the same sentence.
+
+And notice the whole thing is conservative on purpose: **a rule that groups two
+genuinely separate problems is worse than one that misses a grouping.**
+
+## emit.py · the two steps that are not the same step
+""")
+n.code("""from signal_service import emit
+print(inspect.getdoc(emit))""")
+n.md("""
+## scheduler.py · thirty lines, three decisions
+""")
+n.code("""from signal_service import scheduler
+print(inspect.getdoc(scheduler))""")
+n.md("""
+---
+
+# Part three · the agents, file by file
+
+```
+tools/warehouse.py   read only SQL. The guard that is a fact
+tools/lineage.py     code and git. Cannot touch the database
+tools/verify.py      re-run a pipeline, re-check the invariants
+tools/publish.py     the artifacts a person acts on
+tools/repo.py        the isolated worktree
+agents.py            the five specialists
+supervisor.py        subagents as tools
+worker.py            the HTTP surface and the worker pool
+```
+
+## The toolbox is split so no agent can do everything
+""")
+n.code("""from agent_service.tools.warehouse import READ_TOOLS
+from agent_service.tools.lineage import LINEAGE_TOOLS
+from agent_service.tools.verify import VERIFY_TOOLS
+from agent_service.tools.publish import PUBLISH_TOOLS
+from agent_service.tools.signals import SIGNAL_TOOLS
+
+for label, tools in [('warehouse (agent 2)', READ_TOOLS),
+                     ('lineage   (agent 3)', LINEAGE_TOOLS),
+                     ('publish   (agent 4)', PUBLISH_TOOLS),
+                     ('verify    (agent 5)', VERIFY_TOOLS),
+                     ('signals   (agent 1)', SIGNAL_TOOLS)]:
+    print(f'{label}  {len(tools)}')
+    for t in tools:
+        print(f'    {t.name}')
+    print()""")
+n.md("""
+> **An agent with every tool will use every tool.**
+
+The data detective cannot open a file, so everything it reports came from a
+query. The lineage detective cannot query, so it cannot redo the previous
+agent's work with worse tools.
+
+## The guard that is a fact, not a promise
+""")
+n.code("""from agent_service.tools import warehouse
+print(inspect.getdoc(warehouse))""")
+n.code("""src = inspect.getsource(warehouse._query)
+print(src[:1500])""")
+n.md("""
+### This is the sentence to write on the whiteboard
+
+> **Whether an agent meant well is a judgement. Whether it CAN write is a fact.**
+
+`conn.read_only = True` is the fact. The regex above it is a courtesy that makes
+the error message readable. Every rule you enforce only in a system prompt is a
+rule you are hoping about.
+
+## agents.py · the prompts ARE the lesson
+
+There is no list of known incidents anywhere in this project. Each agent is
+given a method and a toolbox. Read one out loud.
+""")
+n.code("""from agent_service.agents import DATA_PROMPT
+print(DATA_PROMPT)""")
+n.md("""
+Nowhere does it say "if surge is missing, look at app versions". It says *split
+it, by whatever column exists*, and the agent works out which column mattered by
+looking.
+
+**That is the difference between a system that handles six known problems and
+one that handles the problem nobody has seen.**
+
+## supervisor.py · subagents as tools
+""")
+n.code("""from agent_service import agents
+src = inspect.getsource(agents.build_subagent_tools)
+print(src[src.index('    @tool("triage"'):src.index('    @tool("investigate_lineage"')])""")
+n.md("""
+Each specialist is an agent, wrapped as a tool, returning a typed verdict as
+JSON. The supervisor decides who is asked next and carries the answer forward.
+
+**The specialists are stateless.** Each starts in a clean context, which is what
+stops the fifth agent inheriting four agents' worth of noise.
+
+## repo.py · the bug that shaped a file
+""")
+n.code("""from agent_service.tools import repo
+print(inspect.getdoc(repo))""")
+n.md("""
+Worth telling as a story in class, because it is the project failing at exactly
+the thing it teaches. It reported success and committed nothing.
+
+---
+
+# Part four · the tests are the specification
+
+If you want to know what this project actually promises, do not read the README.
+Read the assertions.
+""")
+n.code("""out = subprocess.run(['python', '-m', 'pytest', '--collect-only', '-q'],
+                     cwd=ROOT, capture_output=True, text=True)
+lines = [l for l in out.stdout.splitlines() if '::' in l]
+print(f'{len(lines)} tests\\n')
+for f in ('test_guards', 'test_correlate', 'test_isolation', 'test_catalogue'):
+    n_in = sum(1 for l in lines if f in l)
+    print(f'  {f:20} {n_in:>4}')""")
+n.code("""names = sorted({l.split('::')[-1].split('[')[0] for l in lines if 'test_guards' in l})
+print('what the guards promise:\\n')
+for name in names:
+    print('  ', name.replace('test_', '').replace('_', ' '))""")
+n.md("""
+Read that list as a sentence each. **That is the safety story of this project,
+and every line of it is executable.**
+
+---
+
+# Part five · changing it
+
+Three things you will want to do, and where each one lives.
+
+## Add a KPI
+
+One entry in `signal_service/kpis.py`. Nothing else changes: the API, the clock,
+the store and the agents all pick it up.
+""")
+n.code("""print(inspect.getsource(type(get('records_held'))).split('# ═══')[0])""")
+n.md("""
+Three rules for a new one: **the query returns exactly one number**, `means` is
+written for the owner rather than for you, and the owner is somebody who exists.
+
+## Add an invariant
+
+One entry in `signal_service/invariants.py`. Remember the difference: if you
+want to write "usually" into it, it is a signal and it belongs in `kpis.py`.
+
+## Add a tool
+
+A function with `@tool` in `agent_service/tools/`, added to exactly one agent's
+list. Before you write it, decide which of these three it is:
+
+| | |
+|---|---|
+| **read only** | enforced at the connection, not in the prompt |
+| **limited** | an allow list of names or directories |
+| **gated** | it stops the graph and waits for a person |
+
+**Never rely on the system prompt to hold a boundary.**
+
+---
+
+## What to say at the end of the course
+
+The whole project is one argument, and it fits in four lines:
+
+> A pipeline that fails wakes somebody.
+> A pipeline that succeeds while quietly carrying less data than it should
+> wakes nobody.
+> Every row count check you can write stays green through that.
+> So something has to watch the numbers, and something has to work out why.
+
+Everything else, the medallion layers, the contracts, the quarantine, the
+thirteen KPIs, the seventeen invariants, the five agents and the four
+boundaries, is machinery in service of those four lines.
+""")
+n.save()

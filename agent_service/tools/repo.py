@@ -215,8 +215,17 @@ def propose(breach_id: str, summary: str, rationale: str, path: str,
             return out
 
         if _git("checkout", "-b", branch, cwd=work).returncode != 0:
-            # a branch of that name already exists, so reuse it rather than fail
-            _git("checkout", branch, cwd=work)
+            # The branch already exists, which means this breach has been worked
+            # before. Reusing it silently is how you get the confusing failure:
+            # the file on that branch ALREADY has the change, so the old_string
+            # check fails and the caller is told "that text is not in the file",
+            # which is a lie. Say what actually happened instead.
+            existing = _git("rev-parse", "--short", branch).stdout.strip()
+            out.reason = (
+                f"a branch for this change already exists: {branch} at "
+                f"{existing}. Nothing was done. Either that proposal is still "
+                f"open, or delete the branch and try again.")
+            return out
 
         # apply the edit inside the isolated checkout, never in the live tree
         target = work / rel

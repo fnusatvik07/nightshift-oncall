@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
+import uuid
 
 import pytest
 
@@ -229,7 +230,7 @@ def test_pytest_being_loaded_alone_would_stop_it(monkeypatch):
 def test_a_proposal_in_a_test_commits_but_does_not_push(tmp_path):
     """The branch and commit still happen, so the tool is still exercised."""
     result = repo.propose(
-        breach_id="NOPUSH", summary="x", rationale="x",
+        breach_id=f"NOPUSH{uuid.uuid4().hex[:6]}", summary="x", rationale="x",
         path="signals/board.py",
         old_string="Z_THRESHOLD = 4.0", new_string="Z_THRESHOLD = 4.9",
         artifacts=tmp_path)

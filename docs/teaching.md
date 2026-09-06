@@ -1,9 +1,90 @@
 # Running this as a class
 
-Written for whoever is standing at the front. The notebooks carry the material;
-this is about pacing, what to put on the screen, and what people actually ask.
+Written for whoever is standing at the front.
 
 ---
+
+## Part zero: reading it yourself, first
+
+You cannot teach this from the README. Here is the order that works, and it is
+about six hours spread over a few sittings.
+
+### 1 · Understand the shape, before running anything  ·  40 minutes
+
+| Read | For |
+|:--|:--|
+| [the README](../README.md) | the three diagrams. Look at them, do not skim them |
+| [architecture.md](architecture.md) | what is running, and why nothing reads upward |
+| [medallion.md](medallion.md) | what each layer is allowed to do |
+
+Stop when you can answer this without looking: **why does bronze have no
+opinions?** If you cannot, the rest will not stick, because every other decision
+in the project follows from that one.
+
+### 2 · Run it, and break it  ·  1 hour
+
+Follow [setup.md](setup.md) exactly. Then, in a terminal, in this order:
+
+```bash
+python cli.py status          # what exists
+python cli.py run all         # build the warehouse
+python cli.py signals         # thirteen numbers, one breach
+python cli.py invariants      # seventeen things that must never be false
+
+python break_it.py            # move a field upstream
+python cli.py run all         # everything still succeeds
+python cli.py signals         # and one number has moved
+python cli.py investigate surge_coverage_pct
+python break_it.py --fix
+```
+
+That sequence is the entire project in ten commands. Everything else is
+explanation.
+
+### 3 · The warehouse, through the notebooks  ·  3 hours
+
+Notebooks **1 to 12**, in order, running every cell. Do not read them, run them.
+
+If you are short on time, **1, 2, 7 and 9** are the spine: what a pipeline is,
+how one is built, why a join is dangerous, and what a silent failure looks like.
+
+### 4 · The two services  ·  2 hours
+
+Notebooks **13 to 18**, in order. These are the new material and the reason the
+project exists in this form.
+
+Read the source alongside them, in this order, because each file only needs the
+one before it:
+
+```
+events/contract.py            the smallest file, and both services depend on it
+signal_service/kpis.py        thirteen definitions. Read three, skip the rest
+signal_service/evaluate.py    reading, then verdict, and why they are separate
+signal_service/correlate.py   the grouping rules, and the arithmetic behind them
+signal_service/scheduler.py   thirty lines, and three decisions
+
+agent_service/tools/warehouse.py   the read only guard. Read the docstring twice
+agent_service/agents.py            the five prompts. These ARE the lesson
+agent_service/supervisor.py        subagents as tools
+agent_service/tools/repo.py        the worktree, and the bug that made it necessary
+tests/test_guards.py               what the project claims, as assertions
+```
+
+**Every file opens with a docstring explaining the decision rather than the
+syntax.** Those docstrings are the teaching material; the code underneath is
+just the proof that it works.
+
+### 5 · The parts you will be asked about  ·  40 minutes
+
+| Read | When somebody asks |
+|:--|:--|
+| [contracts.md](contracts.md) | "why hold a record instead of fixing it?" |
+| [signals.md](signals.md) | "how do I know my baseline is right?" |
+| [agents.md](agents.md) | "what stops it doing something stupid?" |
+| [data.md](data.md) | "where did this incident come from?" |
+
+---
+
 
 ## Before anybody arrives
 
@@ -36,9 +117,14 @@ than any slide.
 
 ---
 
-## Four sessions
+## Seven sessions
 
 Each is about two hours. Notebooks are self contained, so you can stop anywhere.
+
+| Sessions | Notebooks | About |
+|:--|:--|:--|
+| 1 to 4 | 1 to 12 | building the warehouse, and the tools it uses |
+| 5 to 7 | 13 to 19 | the two services that watch it, and the code itself |
 
 ### Session 1 · What this job is, and bronze
 
@@ -130,6 +216,100 @@ having pressed anything is the point of the session.
 **What they should leave saying:** Airflow starts programs and never touches a
 row.
 
+### Session 5 · Somebody has to watch the numbers
+
+**Notebooks 13, 14**
+
+Open by reminding them of notebook 9: a field moved, nothing failed, a number
+stopped being true. Then ask the room, **"so who finds out?"** Let the silence
+sit.
+
+Notebook 13 is one distinction, and it is worth the whole hour:
+
+> A KPI is a number with a definition and an owner. **It can never fire.**
+> A signal is a KPI plus a baseline plus a tolerance. **That one can breach.**
+
+Run the cell that prints yesterday's revenue and ask whether it is good or bad.
+Nobody can answer, and that is the point: a number has no opinion about itself.
+
+Notebook 14 turns the command into a service. The moment to slow down is the
+`GET` versus `POST` argument: **a dashboard refreshing every ten seconds must
+not be able to page somebody.** Somebody in the room will have lived that.
+
+Finish with the fingerprint cell. A board on a one minute clock would open 1,440
+investigations a day for one broken pipeline without it.
+
+**What they should leave saying:** you cannot alert on a number, only on a
+number plus somebody's opinion of what normal is.
+
+### Session 6 · Five agents, and what they are not allowed to do
+
+**Notebooks 15, 16, 17**
+
+Notebook 15 builds one agent from nothing: a tool, an agent, a typed answer, and
+a guard. If the room has never used an agent framework, this hour is enough on
+its own.
+
+The cell to linger on is the one that hands `DELETE FROM teach.silver_rides` to
+the SQL tool. It is refused twice: once by a regex, once by the connection being
+opened read only. Say the sentence:
+
+> **Whether an agent meant well is a judgement. Whether it CAN write is a fact.**
+
+Notebook 16 is why five and not one. Put the tool lists side by side and let
+them see that the data detective cannot open a file. **An agent with every tool
+will use every tool.**
+
+Then run the whole investigation live. It takes a minute or two, which is a good
+moment to ask what they think it will find. It usually finds the release.
+
+Notebook 17 is the boundaries, and the demos are the argument: it tries to edit
+a file outside the allow list and is refused, then proposes code that would not
+compile and is refused again. End on `request_db_change`, which records a
+statement and runs nothing.
+
+**What they should leave saying:** the prompt is a request; the read only
+connection is a constraint. Build on constraints.
+
+### Session 7 · Running it, and reading it
+
+**Notebooks 18, 19**
+
+Notebook 18 is the deployment. Three containers, and the demo is: break
+something, then touch nothing. Put `docker logs -f nightshift-signal-scheduler`
+on the screen and talk for sixty seconds while it catches up.
+
+Notebook 19 is the one to use when somebody says *"but how is it actually
+built?"*. It walks the source in dependency order, printing real code out of
+real files. Use it as the closing session, or hand it to the person on your team
+who has to maintain this after the course.
+
+**What they should leave saying:** every file opens with a docstring explaining
+the decision rather than the syntax, and those docstrings are the material.
+
+---
+
+## Two stories worth telling
+
+Both are bugs this project committed against itself, and both land better than
+any invented example, because the room can see the fix in the repository.
+
+**The shared working tree.** The code change tool ran `git checkout` in the
+project's own directory. One investigation worked. Two, reproduced in a
+throwaway repo, gave: thread one reporting *committed* with the original file on
+its branch, thread two reporting *commit failed* with its change on its branch.
+A success report containing no change.
+
+**The tests that opened seven pull requests.** The concurrency tests call the
+real code, the target repository is configurable, and it pointed at a live one.
+The tests passed. Nothing failed. The side effect was somewhere else entirely.
+
+> A test that can open a pull request is not a test, it is a deployment.
+
+Ask the room what these two have in common with the surge field moving. The
+answer is the whole course: **nothing failed, and the wrong answer looked
+exactly like the right one.**
+
 ---
 
 ## Questions you will get
@@ -176,9 +356,16 @@ is fragile asks better questions.
 
 ## If you only have one hour
 
-Notebooks 1, 2 and 9.
+Notebooks **1, 2 and 9**. Why a warehouse exists, how a pipeline is really
+built, and what a silent failure looks like.
 
-The first says why a warehouse exists. The second builds a real pipeline with
-every rule in it. The ninth breaks it and finds the break.
+## If you only have one day
 
-That is the whole argument, and it fits in an hour.
+Notebooks **1, 2, 9, 13, 16 and 18**. That is the entire argument end to end: a
+warehouse, a silent failure, the thing that notices, the thing that
+investigates, and the whole lot running unattended.
+
+## If somebody has to maintain it afterwards
+
+Notebook **19**, and then the source in the order it names. Six hours, and they
+will be able to add a KPI, an invariant or a tool without asking anybody.

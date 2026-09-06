@@ -15,6 +15,7 @@ The fix is a git worktree per investigation. These tests hold it in place.
 from __future__ import annotations
 
 import subprocess
+import uuid
 import threading
 
 import pytest
@@ -67,7 +68,7 @@ def test_the_live_working_tree_is_never_touched(tmp_path):
     before_status = _git("status", "--porcelain").stdout
 
     result = repo.propose(
-        breach_id="ISOLATION1", summary="test", rationale="test",
+        breach_id=f"ISO{uuid.uuid4().hex[:6]}", summary="test", rationale="test",
         path="signals/board.py",
         old_string="Z_THRESHOLD = 4.0", new_string="Z_THRESHOLD = 4.1",
         artifacts=tmp_path)
@@ -90,7 +91,8 @@ def test_three_at_once_all_succeed(tmp_path):
     if len(files) < 3:
         pytest.skip(f"only found {len(files)} editable files in {repo.ROOT}")
 
-    targets = [(f"C{i}", path, old, new)
+    run = uuid.uuid4().hex[:6]
+    targets = [(f"C{i}{run}", path, old, new)
                for i, (path, old, new) in enumerate(files, 1)]
     results = {}
 
@@ -124,11 +126,11 @@ def test_no_worktrees_are_left_behind(tmp_path):
     """A failed or finished proposal tidies up after itself."""
     before = len(_git("worktree", "list").stdout.splitlines())
 
-    ok = repo.propose(breach_id="TIDY1", summary="x", rationale="x",
+    ok = repo.propose(breach_id=f"TIDYA{uuid.uuid4().hex[:6]}", summary="x", rationale="x",
                       path="signals/board.py",
                       old_string="Z_THRESHOLD = 4.0", new_string="Z_THRESHOLD = 4.3",
                       artifacts=tmp_path)
-    bad = repo.propose(breach_id="TIDY2", summary="x", rationale="x",
+    bad = repo.propose(breach_id=f"TIDYB{uuid.uuid4().hex[:6]}", summary="x", rationale="x",
                        path="signals/board.py",
                        old_string="Z_THRESHOLD = 4.0", new_string="Z_THRESHOLD = = 4",
                        artifacts=tmp_path)
@@ -136,3 +138,28 @@ def test_no_worktrees_are_left_behind(tmp_path):
     assert ok.ok and not bad.ok
     assert len(_git("worktree", "list").stdout.splitlines()) == before
     _cleanup(ok.branch)
+
+
+def test_an_existing_branch_is_reported_honestly(tmp_path):
+    """The failure mode that made this suite flaky, pinned.
+
+    Working the same breach twice used to silently reuse the branch. The file on
+    it already had the change, so the old_string check failed and the caller was
+    told "that text is not in the file", which was untrue and sent an agent
+    hunting for a different cause.
+    """
+    bid = f"TWICE{uuid.uuid4().hex[:6]}"
+    args = dict(breach_id=bid, summary="x", rationale="x",
+                path="signals/board.py",
+                old_string="Z_THRESHOLD = 4.0", new_string="Z_THRESHOLD = 4.4",
+                artifacts=tmp_path)
+
+    first = repo.propose(**args)
+    assert first.ok, first.reason
+    try:
+        second = repo.propose(**args)
+        assert not second.ok
+        assert "already exists" in second.reason
+        assert "not in the file" not in second.reason
+    finally:
+        _cleanup(first.branch)

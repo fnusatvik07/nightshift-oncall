@@ -327,8 +327,15 @@ its own branch. Two investigations cannot see each other's files, and the tree a
 human is sitting in is never touched. That is the "worktree per incident" line
 in the architecture, and it is not an optimisation.
 
-Three tests hold it in place, including one that runs three proposals
+Five tests hold it in place, including one that runs three proposals
 concurrently and asserts every commit is non empty.
+
+A third bug fell out of writing them. Working the same breach twice silently
+reused the existing branch, whose file **already had the change**, so the check
+failed and the caller was told *"that text is not in the file"*. Untrue, and it
+would send an agent hunting for a different cause. It now says the branch
+already exists and does nothing. That one made the test suite flaky, which is
+how it was found.
 
 ### And a second incident, from the tests themselves
 
@@ -337,7 +344,7 @@ a live GitHub repository, so **running the test suite opened seven real pull
 requests on it**, titled `C1`, `C2` and `x`.
 
 Nothing failed. The tests passed. The side effect was somewhere else entirely,
-which is the exact shape this project spends eighteen notebooks warning about,
+which is the exact shape this project spends nineteen notebooks warning about,
 committed by the project, twice.
 
 Pushing is now blocked by two independent checks:

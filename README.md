@@ -15,16 +15,16 @@
 [![MinIO](https://img.shields.io/badge/MinIO-S3-C72E49?style=flat-square&logo=minio&logoColor=white)](https://min.io)
 [![Airflow](https://img.shields.io/badge/Airflow-2.10-017CEE?style=flat-square&logo=apacheairflow&logoColor=white)](https://airflow.apache.org)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com)
-[![Tests](https://img.shields.io/badge/tests-191%20passing-047857?style=flat-square)](tests/)
+[![Tests](https://img.shields.io/badge/tests-192%20passing-047857?style=flat-square)](tests/)
 [![Licence](https://img.shields.io/badge/licence-MIT-111111?style=flat-square)](LICENSE)
 
 <br>
 
-**Eighteen notebooks · Eight pipelines · Six sources · Thirteen KPIs · Five agents · One command**
+**Nineteen notebooks · Eight pipelines · Six sources · Thirteen KPIs · Five agents · One command**
 
 <br>
 
-[Quick start](#quick-start) · [What happens at 3am](#what-happens-at-3am) · [The two services](#the-two-services) · [What it refuses to do](#what-it-refuses-to-do) · [Notebooks](#the-eighteen-notebooks) · [Docs](docs/)
+[Quick start](#quick-start) · [What happens at 3am](#what-happens-at-3am) · [The two services](#the-two-services) · [What it refuses to do](#what-it-refuses-to-do) · [Notebooks](#the-nineteen-notebooks) · [Docs](docs/)
 
 </div>
 
@@ -227,7 +227,7 @@ python cli.py investigate surge_coverage_pct    # run the five, by hand
 | cannot touch data | the graph stops and waits for a person |
 | cannot push from a test run | two independent checks, after it once did |
 
-**191 tests hold those in place**, and none needs a database:
+**192 tests hold those in place**, and none needs a database:
 
 ```bash
 pytest
@@ -249,10 +249,14 @@ an attached architecture diagram, changing no agent code.
 
 ---
 
-## The eighteen notebooks
+## The nineteen notebooks
 
 Run them in order. Each one holds runnable code in its cells, not a description
 of code that lives elsewhere.
+
+**About to teach this?** [teaching.md](docs/teaching.md) opens with a reading
+order for yourself, then seven session plans. Notebook 19 is the guided tour of
+the source, for when somebody asks how it is actually built.
 
 <table>
 <tr><td valign="top" width="50%">
@@ -286,6 +290,7 @@ of code that lives elsewhere.
 | 16 | Five agents and a supervisor |
 | 17 | What it is allowed to do |
 | 18 | Running it for real |
+| 19 | **The code, walked through** |
 
 </td></tr>
 </table>
@@ -334,7 +339,7 @@ nightshift-oncall/
 ├── events/             the one record both services agree on
 ├── seed/               generates the world all six systems describe
 ├── platform/           docker compose, schemas, the partner API
-├── tests/              191 tests over the guards
+├── tests/              192 tests over the guards
 └── docs/               twelve documents
 ```
 
@@ -377,7 +382,7 @@ change. Fixed with a git worktree per investigation.
 **The test suite opened seven pull requests on a live repository.** The
 concurrency tests call the real code, the target repo is configurable, and it
 pointed at a real one. The tests passed. Nothing failed. The side effect was
-somewhere else entirely, which is the exact shape this project spends eighteen
+somewhere else entirely, which is the exact shape this project spends nineteen
 notebooks warning about.
 
 > A test that can open a pull request is not a test, it is a deployment.
