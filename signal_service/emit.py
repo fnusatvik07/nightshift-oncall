@@ -20,9 +20,9 @@ import os
 
 import httpx
 
-from events.contract import SignalBreach
+from events.contract import Incident, SignalBreach
 
-from . import store
+from . import correlate, store
 
 AGENT_URL = os.environ.get("AGENT_SERVICE_URL", "http://localhost:8092")
 NOTIFY_TIMEOUT = float(os.environ.get("AGENT_NOTIFY_TIMEOUT", "5"))
@@ -59,4 +59,57 @@ def emit(breach: SignalBreach, notify: bool = True) -> dict:
         # Deliberately not an error. The record is on disk; the agent will find
         # it. Losing the doorbell must never mean losing the breach.
         return {"action": "recorded", "breach_id": breach.breach_id,
+                "notify_failed": f"{type(e).__name__}: {e}"}
+
+
+def emit_incidents(breaches: list[SignalBreach], board_size: int,
+                   notify: bool = True) -> list[dict]:
+    """Group the breaches from one cycle, then raise one record per incident.
+
+    This is the step that stops six signals becoming six investigations. See
+    correlate.py for the rules and the arithmetic behind them.
+    """
+    fresh: list[SignalBreach] = []
+    suppressed: list[dict] = []
+
+    # deduplicate first, so a breach that is already being worked does not drag
+    # unrelated signals into a new incident with it
+    for b in breaches:
+        existing = store.already_open(b)
+        if existing:
+            suppressed.append({"kpi": b.kpi, "action": "suppressed",
+                               "breach_id": existing,
+                               "why": "the same breach is already open"})
+        else:
+            fresh.append(b)
+
+    out = list(suppressed)
+    for incident in correlate.group(fresh, board_size):
+        for b in incident.breaches:
+            store.record(b)
+        store.record_incident(incident)
+        out.append(_dispatch(incident, notify))
+    return out
+
+
+def _dispatch(incident: Incident, notify: bool) -> dict:
+    base = {"incident_id": incident.incident_id,
+            "kpi": incident.primary.kpi,
+            "signals": incident.signal_count,
+            "correlation": incident.correlation}
+
+    if not notify:
+        return {**base, "action": "recorded"}
+
+    try:
+        r = httpx.post(f"{AGENT_URL}/incident",
+                       json=incident.model_dump(mode="json"), timeout=NOTIFY_TIMEOUT)
+        r.raise_for_status()
+        store.mark_incident(incident.incident_id, "dispatched")
+        for b in incident.breaches:
+            store.mark(b.breach_id, "dispatched")
+        return {**base, "action": "dispatched", "agent_said": r.json()}
+    except Exception as e:
+        # The incident is on disk. Losing the doorbell must never mean losing it.
+        return {**base, "action": "recorded",
                 "notify_failed": f"{type(e).__name__}: {e}"}

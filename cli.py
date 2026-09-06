@@ -14,6 +14,7 @@
     python cli.py kpis                the KPI catalogue, and who owns each
     python cli.py signals             evaluate every KPI right now
     python cli.py watch               run the signal board on a clock
+    python cli.py invariants          the things that must always be true
     python cli.py incidents           what has breached, and what came of it
     python cli.py investigate <kpi>   run the agents against one breach, by hand
 
@@ -186,18 +187,39 @@ def cmd_watch(a) -> int:
     return sh("-m", "signal_service.scheduler", "--every", str(a.every))
 
 
+def cmd_invariants(_) -> int:
+    """The things that must always be true. Zero violations is the only pass."""
+    from signal_service import invariants as inv
+    report = inv.check_all()
+    print()
+    print(inv.summary_text(report))
+    if report["violations"]:
+        print("\n  VIOLATIONS IN DETAIL\n")
+        for v in report["violations"]:
+            print(f"  {v['name']}  ({v['severity']}, {v['layer']})")
+            print(f"    {v['means']}")
+            print(f"    {v['violations']} violating row(s):")
+            for row in v["sample"][:3]:
+                print(f"      {row}")
+            print()
+    print()
+    return 1 if report["violations"] else 0
+
+
 def cmd_incidents(_) -> int:
+    """One row per cause, however many signals noticed it."""
     from signal_service import store
-    rows = store.open_breaches(20)
+    rows = store.open_incidents(20)
     if not rows:
         print("\n  nothing has breached yet.\n")
         return 0
-    print(f"\n  {len(rows)} most recent breaches\n")
-    print(f"  {'breach':18} {'kpi':26} {'severity':9} {'status':14} owner")
-    print("  " + "-" * 92)
+    print(f"\n  {len(rows)} most recent incidents\n")
+    print(f"  {'incident':16} {'lead signal':26} {'sev':9} {'signals':>7}  "
+          f"{'status':12} owners")
+    print("  " + "-" * 100)
     for r in rows:
-        print(f"  {r['breach_id']:18} {r['kpi']:26} {r['severity']:9} "
-              f"{r['status']:14} {r['owner']}")
+        print(f"  {r['incident_id']:16} {r['primary_kpi']:26} {r['severity']:9} "
+              f"{r['signal_count']:>7}  {r['status']:12} {r['owners']}")
     print()
     return 0
 
@@ -210,6 +232,16 @@ def cmd_investigate(a) -> int:
 
     target = a.what
     breach = None
+    if target.startswith("INC"):
+        incident = store.load_incident(target)
+        if incident is None:
+            print(f"  no incident called {target!r}")
+            return 1
+        print(f"\n  {incident.one_line()}\n")
+        out = investigate(incident)
+        print("  " + " -> ".join(s["tool"] for s in out["steps"]))
+        print("\n" + out["handover"] + "\n")
+        return 0
     if target.startswith("BRC"):
         breach = store.load(target)
     else:
@@ -230,8 +262,12 @@ def cmd_investigate(a) -> int:
         print(f"  no breach called {target!r}")
         return 1
 
-    print(f"\n  {breach.one_line()}\n")
-    out = investigate(breach)
+    from signal_service import correlate
+    incident = correlate.group([breach], board_size=13)[0]
+    store.record_incident(incident)
+
+    print(f"\n  {incident.one_line()}\n")
+    out = investigate(incident)
     print("  " + " -> ".join(s["tool"] for s in out["steps"]))
     if out["waiting_for_human"]:
         print("\n  PAUSED, waiting for a human to approve a data change.")
@@ -267,6 +303,7 @@ def main() -> int:
     watch = sub.add_parser("watch")
     watch.add_argument("--every", type=int, default=60, help="seconds between cycles")
     watch.set_defaults(fn=cmd_watch)
+    sub.add_parser("invariants").set_defaults(fn=cmd_invariants)
     sub.add_parser("incidents").set_defaults(fn=cmd_incidents)
     inv = sub.add_parser("investigate")
     inv.add_argument("what", help="a breach id, or a kpi name")

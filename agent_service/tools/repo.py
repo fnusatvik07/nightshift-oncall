@@ -33,13 +33,26 @@ investigation safe.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 import subprocess
 import tempfile
 import uuid
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+PROJECT = pathlib.Path(__file__).resolve().parents[2]
+
+# Which repository a proposed change is raised against.
+#
+# By default the agent proposes changes to the project it lives in, which is
+# what you want on a laptop. In a real estate the pipelines live in their own
+# repository with its own reviewers and its own CI, and the agent should raise
+# a pull request THERE rather than in the repository it happens to run from.
+#
+# Point ONCALL_REPO_PATH at a local clone of that repository and nothing else
+# changes: same tools, same guards, same isolation. The agent does not know or
+# care which repository it is proposing against.
+ROOT = pathlib.Path(os.environ.get("ONCALL_REPO_PATH", str(PROJECT))).expanduser().resolve()
 
 # The only directories a proposed change may touch. An agent that can edit the
 # tests which judge it is not being judged.
@@ -102,7 +115,8 @@ class Proposal:
     def summary(self) -> str:
         if not self.ok:
             return self.reason
-        lines = [f"branch {self.branch}, commit {self.commit[:8]}, main untouched"]
+        lines = [f"branch {self.branch}, commit {self.commit[:8]}, "
+                 f"main untouched in {ROOT.name}"]
         if self.pr_url:
             lines.append(f"pull request: {self.pr_url}")
         elif self.pushed:

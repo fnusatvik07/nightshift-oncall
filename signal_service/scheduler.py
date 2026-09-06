@@ -39,7 +39,7 @@ import time
 
 from . import evaluate as ev
 from . import store
-from .emit import emit
+from .emit import emit_incidents
 
 _stopping = False
 
@@ -72,16 +72,13 @@ def cycle(notify: bool = True) -> dict:
         # Losing a reading is a shame. Losing the cycle is worse.
         print(f"    could not save readings: {type(e).__name__}: {e}")
 
-    breached, actions = [], []
-    for kpi, reading, verdict in results:
-        if verdict.breached:
-            breached.append(kpi.name)
-            try:
-                actions.append({"kpi": kpi.name,
-                                **emit(ev.to_breach(kpi, reading, verdict), notify)})
-            except Exception as e:           # noqa: BLE001
-                actions.append({"kpi": kpi.name, "action": "failed",
-                                "why": f"{type(e).__name__}: {e}"})
+    breached = [k.name for k, _r, v in results if v.breached]
+    try:
+        actions = emit_incidents(
+            [ev.to_breach(k, r, v) for k, r, v in results if v.breached],
+            board_size=len(results), notify=notify)
+    except Exception as e:                   # noqa: BLE001
+        actions = [{"kpi": "all", "action": "failed", "why": f"{type(e).__name__}: {e}"}]
 
     return {
         "evaluated": len(results),
@@ -106,8 +103,12 @@ def _print_cycle(n: int, result: dict) -> None:
     print(head)
     for a in result["actions"]:
         why = a.get("why") or a.get("notify_failed") or ""
-        print(f"             {a['kpi']:24} {a['action']:12} {a.get('breach_id', '')} {why}"
+        ident = a.get("incident_id") or a.get("breach_id", "")
+        signals = f"({a['signals']} signals)" if a.get("signals", 1) > 1 else ""
+        print(f"             {a['kpi']:24} {a['action']:12} {ident} {signals} {why}"
               .rstrip())
+        if a.get("signals", 1) > 1:
+            print(f"                {a['correlation'][:88]}")
 
 
 def main() -> int:

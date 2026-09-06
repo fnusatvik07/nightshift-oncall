@@ -77,3 +77,68 @@ class SignalBreach(BaseModel):
         return (f"{self.kpi} is {arrow} at {self.value:,.3f}{self.unit} "
                 f"against a baseline of {self.baseline:,.3f}{self.unit} "
                 f"({self.severity}, {self.owner})")
+
+
+class Incident(BaseModel):
+    """One cause, however many signals noticed it.
+
+    This is the record that actually crosses between the two services, and the
+    reason it exists is arithmetic. Thirteen signals watch one warehouse. When a
+    pipeline dies, six of them breach in the same cycle, for one reason. Emitting
+    six records means six investigations, six pages, six tickets and six times
+    the model spend, for a single cause, and the person on call has to work out
+    that they are the same thing before they can start.
+
+    So the board correlates before it pages. The agent receives one incident with
+    a primary signal and the others attached as corroboration, which is also
+    better evidence: six signals moving together is a much stronger statement
+    than one signal moving alone.
+    """
+
+    incident_id: str
+    detected_at: dt.datetime
+
+    primary: SignalBreach = Field(
+        description="the signal to lead with, usually the most upstream one")
+    related: list[SignalBreach] = Field(
+        default_factory=list, description="the others that moved for the same reason")
+
+    correlation: str = Field(
+        description="why these were grouped, in words a person can check")
+    severity: Severity = "medium"
+    owners: list[str] = Field(default_factory=list)
+
+    @property
+    def breaches(self) -> list[SignalBreach]:
+        return [self.primary, *self.related]
+
+    @property
+    def signal_count(self) -> int:
+        return 1 + len(self.related)
+
+    def one_line(self) -> str:
+        if not self.related:
+            return self.primary.one_line()
+        others = ", ".join(b.kpi for b in self.related)
+        return (f"{self.primary.one_line()}  "
+                f"(and {len(self.related)} more: {others})")
+
+    def brief(self) -> str:
+        """Everything an agent needs to start, as text rather than JSON."""
+        lines = [f"INCIDENT {self.incident_id}   severity {self.severity}",
+                 f"  why grouped: {self.correlation}",
+                 f"  owners:      {', '.join(self.owners)}",
+                 "",
+                 "  LEAD SIGNAL"]
+        b = self.primary
+        lines += [f"    {b.kpi}  ({b.title})",
+                  f"    value {b.value}{b.unit}, normally {b.baseline}{b.unit}, "
+                  f"{b.direction}",
+                  f"    watches {b.watches}",
+                  f"    means   {b.means}"]
+        if self.related:
+            lines += ["", "  ALSO MOVED, at the same time"]
+            for r in self.related:
+                lines.append(f"    {r.kpi:26} {r.value:>12,.3f}{r.unit:<4} "
+                             f"normally {r.baseline:>12,.3f}   {r.owner}")
+        return "\n".join(lines)

@@ -38,11 +38,12 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 
-from events.contract import SignalBreach
+from events.contract import Incident
 
 from .tools.lineage import LINEAGE_TOOLS
 from .tools.page import CONFLUENCE_TOOLS
 from .tools.publish import PUBLISH_TOOLS
+from .tools.verify import VERIFY_TOOLS
 from .tools.warehouse import READ_TOOLS
 from .tools.signals import SIGNAL_TOOLS
 
@@ -87,9 +88,15 @@ class RemediationVerdict(BaseModel):
 
 
 class VerifierVerdict(BaseModel):
-    resolved: bool = Field(description="has the number come back to normal")
-    current_value: str = Field(description="what the number is now")
-    checked: str = Field(description="what was re-read, and what it said")
+    resolved: bool = Field(description="has the number actually come back to normal")
+    change_applied: bool = Field(
+        description="is the change on disk, or still waiting on a branch")
+    pipeline_ran: bool = Field(default=False,
+        description="was a pipeline re-run, and did it succeed")
+    invariants_held: bool = Field(default=True,
+        description="did every invariant still hold afterwards")
+    current_value: str = Field(description="what the number is now, against its baseline")
+    checked: str = Field(description="what was re-read, and what each thing said")
     recommendation: str = Field(description="what should happen next")
 
 
@@ -232,10 +239,19 @@ ALWAYS, without exception:
 THEN, depending on what the fix actually is:
 
   If the fix is a CODE change, use propose_code_change. It opens a branch and a
-  pull request. It never merges and it never touches the main branch. Make the
-  change as small as the diagnosis allows: one line that adds a known path
-  beats a refactor nobody asked for. Read the file first with read_source and
-  copy the exact text you are replacing.
+  pull request in an isolated checkout. It never merges and it never touches
+  the main branch. Make the change as small as the diagnosis allows: one line
+  that adds a known path beats a refactor nobody asked for. Read the file first
+  with read_source and copy the exact text you are replacing.
+
+  Then put it on the page. propose_code_change hands you back a diff and, when
+  a remote exists, a pull request URL. Pass BOTH to publish_incident_page as
+  change_diff and pull_request, and describe the change in words in
+  proposed_change.
+
+  If no pull request could be opened, that changes nothing about your job: fill
+  in proposed_change and change_diff anyway. A reader who has to work the fix
+  out again from the evidence has been given a diagnosis, not a page.
 
   If the fix would change DATA, use request_db_change. That tool runs nothing.
   It records the statement, estimates the blast radius, states how to reverse
@@ -268,24 +284,49 @@ def remediation_agent():
 # 5 · Verifier. Reads the number again.
 # ═══════════════════════════════════════════════════════════════════════════
 
-VERIFIER_PROMPT = """You check whether the number actually came back.
+VERIFIER_PROMPT = """You prove whether a change worked. You do not take anybody's
+word for it, including the previous agent's.
 
-Re-read the signal and the rows behind it. Report what you see, not what you
-hope.
+An agent will happily tell you it fixed something. Your job is to show a
+pipeline that ran and a number that moved, or to say plainly that neither
+happened.
 
-A proposal that is waiting for a human has NOT fixed anything, and saying it has
-is the worst thing you could do here: it closes an incident that is still open.
-When nothing has been applied, say the number is unchanged and that the change
-is still waiting.
+THE ORDER THAT WORKS
 
-If the number has moved back, say by how much and what you read to know that.
-If it has not, say what you would look at next."""
+  1 check_file_on_disk. Is the change actually applied, or is it sitting on a
+    branch waiting for a human? A proposal that is waiting has fixed NOTHING,
+    and this is the single most common way an incident gets closed while still
+    broken. If it is not on disk, stop here and say so.
+
+  2 run_pipeline, if and only if the change is on disk. A fix in bronze does
+    not reach the number a signal watches until silver and gold have run, so
+    leave with_downstream on unless you have a reason not to.
+
+  3 run_invariants. This is how you tell "the number came back" apart from "the
+    number came back and something else broke". A fix that resolves one signal
+    and violates an invariant is not a fix.
+
+  4 get_signal, on the signal that started this. Compare it to the baseline in
+    the breach you were given. That last pair is the only thing that counts as
+    success.
+
+WHAT YOU MUST NOT DO
+
+Do not report resolved because a change was proposed. Proposed is not applied.
+
+Do not report resolved because a pipeline ran. A pipeline running is not a
+number moving.
+
+A FAILING PIPELINE IS SOMETIMES CORRECT. If the fix was a guard that refuses
+bad input, then the pipeline failing on that input is the guard working. Read
+the output and say which it is, rather than assuming a non zero exit is a
+broken change."""
 
 
 def verifier_agent():
     return create_agent(
         model=MODEL,
-        tools=[*READ_TOOLS, *SIGNAL_TOOLS],
+        tools=[*VERIFY_TOOLS, *READ_TOOLS, *SIGNAL_TOOLS],
         system_prompt=VERIFIER_PROMPT,
         response_format=VerifierVerdict,
         name="verifier",
@@ -309,20 +350,21 @@ def _run(agent, instruction: str) -> str:
     return result["messages"][-1].content
 
 
-def build_subagent_tools(breach: SignalBreach):
-    """Build the five tools, each closed over this specific breach."""
+def build_subagent_tools(incident: Incident):
+    """Build the five tools, each closed over this specific incident.
+
+    An incident may carry several signals that moved for one reason. Every
+    specialist sees all of them, because six signals moving together is far
+    stronger evidence than one moving alone, and the corroboration usually
+    points straight at the layer to start from.
+    """
+    breach = incident.primary
 
     context = (
-        f"THE BREACH\n"
-        f"  id         {breach.breach_id}\n"
-        f"  kpi        {breach.kpi}  ({breach.title})\n"
-        f"  value      {breach.value}{breach.unit}\n"
-        f"  baseline   {breach.baseline}{breach.unit}\n"
+        f"{incident.brief()}\n\n"
+        f"THE LEAD SIGNAL, IN FULL\n"
+        f"  breach id  {breach.breach_id}\n"
         f"  direction  {breach.direction}\n"
-        f"  severity   {breach.severity}\n"
-        f"  owner      {breach.owner}\n"
-        f"  watches    {breach.watches}\n"
-        f"  means      {breach.means}\n"
         f"  history    {breach.history}\n"
         f"  the query  {breach.evaluated_sql}\n"
     )

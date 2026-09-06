@@ -36,7 +36,7 @@ from fastapi import FastAPI, HTTPException
 
 from . import evaluate as ev
 from . import store
-from .emit import emit
+from .emit import emit_incidents
 from .kpis import BY_NAME, CATALOGUE, get
 
 app = FastAPI(
@@ -174,21 +174,32 @@ def run_evaluation(notify: bool = True) -> dict:
         for k, r, v in results
     ])
 
-    emitted = []
-    for kpi, reading, verdict in results:
-        if verdict.breached:
-            breach = ev.to_breach(kpi, reading, verdict)
-            emitted.append({"kpi": kpi.name, **emit(breach, notify=notify)})
+    breaches = [ev.to_breach(k, r, v) for k, r, v in results if v.breached]
+    emitted = emit_incidents(breaches, board_size=len(results), notify=notify)
 
     return {
         "at": dt.datetime.now(dt.timezone.utc),
         "evaluated": len(results),
-        "breached": len(emitted),
+        "breached": len(breaches),
+        "incidents": sum(1 for e in emitted if e.get("incident_id")),
         "emitted": emitted,
     }
 
 
 # ── what has breached ──────────────────────────────────────────────────────
+
+@app.get("/incidents")
+def incidents(limit: int = 25) -> dict:
+    """One row per cause, however many signals noticed it."""
+    return {"incidents": store.open_incidents(limit)}
+
+
+@app.get("/invariants")
+def invariants() -> dict:
+    """The things that must always be true. Zero violations is the only pass."""
+    from . import invariants as inv
+    return inv.check_all()
+
 
 @app.get("/breaches")
 def breaches(limit: int = 50) -> dict:

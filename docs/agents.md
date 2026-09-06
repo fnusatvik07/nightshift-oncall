@@ -247,6 +247,91 @@ durable before anybody is notified.
 
 ---
 
+## The verifier actually verifies
+
+An agent will happily tell you it fixed something. This one has to show a
+pipeline that ran and a number that moved, in this order:
+
+| Step | Tool | Answers |
+|---|---|---|
+| 1 | `check_file_on_disk` | is the change applied, or still on a branch? |
+| 2 | `run_pipeline` | does it run, and does the number reach gold? |
+| 3 | `run_invariants` | did anything else break while fixing this? |
+| 4 | `get_signal` | is the number actually back? |
+
+Step 1 is the one that matters most. **A proposal waiting for a human has fixed
+nothing**, and reporting resolved because a change was proposed is how an
+incident gets closed while still broken.
+
+### Why this agent may run a pipeline when nothing else may write
+
+Every other tool is read only, and that is load bearing, so this needs a better
+argument than "the deck said so".
+
+**The pipelines are idempotent by construction**, which is the first thing the
+whole course teaches: `write_window` deletes the window it is about to rebuild
+and inserts it back in one transaction. Running `p7_silver_rides` twice produces
+the same table as running it once. So running a pipeline does not change the
+answer, it **recomputes** it, and that is categorically different from an
+`UPDATE`.
+
+It is still fenced: only the eight pipelines, by name, with a timeout, and every
+run leaves a row in `teach.runs` exactly like a human running it.
+
+> An agent's permissions should follow from **a property of the thing it is
+> allowed to do**, not from how much you trust the model.
+
+### And a failing pipeline is sometimes correct
+
+If the fix was a guard that refuses bad input, then the pipeline failing on that
+input is the guard working. The verifier is told to tell those apart rather than
+assume a non zero exit is a broken change.
+
+---
+
+## The worker pool
+
+Investigations are expensive: five agents, a dozen model calls, a minute or two
+each. Left unbounded, six incidents at once means six concurrent investigations,
+six times the spend, and six processes competing for the same connections.
+
+```
+ONCALL_MAX_CONCURRENT=2      how many run at once
+ONCALL_QUEUE_LIMIT=50        how many may wait
+```
+
+They queue rather than being refused, because a burst worked slowly is what you
+want at 3am. Past the queue limit the service returns `503` and says so: the
+record is already durable, and the sweep will pick it up.
+
+`GET /health` shows both numbers, so "the agents are slow" and "the agents are
+saturated" are different answers rather than the same shrug.
+
+---
+
+## Isolation, and the bug that made it necessary
+
+The first version of the code change tool ran `git checkout -b` in the
+project's own working tree. With one investigation it worked. With two,
+reproduced in a throwaway repository:
+
+```
+thread 1: reported "committed"       its branch contained the ORIGINAL file
+thread 2: reported "commit failed"   its branch contained its change
+```
+
+**A success report with no change in it.** Nobody would find that from the logs.
+
+Each proposal now gets `git worktree add`: its own checkout, its own directory,
+its own branch. Two investigations cannot see each other's files, and the tree a
+human is sitting in is never touched. That is the "worktree per incident" line
+in the architecture, and it is not an optimisation.
+
+Three tests hold it in place, including one that runs three proposals
+concurrently and asserts every commit is non empty.
+
+---
+
 ## Cost, roughly
 
 One investigation is five agents and a dozen or so tool calls. On

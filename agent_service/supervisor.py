@@ -33,7 +33,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 
-from events.contract import SignalBreach
+from events.contract import Incident
 
 from .agents import SUPERVISOR_MODEL, build_subagent_tools
 from .tools.publish import GATED
@@ -81,11 +81,11 @@ At the end, write a short handover, in this shape:
   what a human needs to do next"""
 
 
-def build_supervisor(breach: SignalBreach, checkpointer=None):
+def build_supervisor(incident: Incident, checkpointer=None):
     """The main agent, with the five specialists as its tools."""
     return create_agent(
         model=SUPERVISOR_MODEL,
-        tools=build_subagent_tools(breach),
+        tools=build_subagent_tools(incident),
         system_prompt=SUPERVISOR_PROMPT,
         middleware=[HumanInTheLoopMiddleware(
             interrupt_on=GATED,
@@ -96,26 +96,23 @@ def build_supervisor(breach: SignalBreach, checkpointer=None):
     )
 
 
-def investigate(breach: SignalBreach, thread_id: str | None = None,
+def investigate(incident: Incident, thread_id: str | None = None,
                 checkpointer=None, recursion_limit: int = 40) -> dict:
-    """Run the whole investigation for one breach.
+    """Run the whole investigation for one incident.
 
-    Returns the final handover, the messages, and whether it stopped for a human.
+    Returns the final handover, the steps taken, and whether it stopped for a
+    human.
     """
-    thread_id = thread_id or breach.breach_id
+    thread_id = thread_id or incident.incident_id
     saver = checkpointer or InMemorySaver()
-    agent = build_supervisor(breach, saver)
+    agent = build_supervisor(incident, saver)
     config = {"configurable": {"thread_id": thread_id},
               "recursion_limit": recursion_limit}
 
-    opening = (
-        f"A signal has breached.\n\n{breach.one_line()}\n\n"
-        f"KPI:      {breach.kpi}\n"
-        f"Means:    {breach.means}\n"
-        f"Watches:  {breach.watches}\n"
-        f"Breach id: {breach.breach_id}\n\n"
-        f"Run the investigation."
-    )
+    plural = ("A signal has breached." if incident.signal_count == 1 else
+              f"{incident.signal_count} signals breached together, and the board "
+              f"has grouped them into one incident.")
+    opening = f"{plural}\n\n{incident.brief()}\n\nRun the investigation."
 
     result = agent.invoke({"messages": [{"role": "user", "content": opening}]}, config)
 
@@ -124,7 +121,8 @@ def investigate(breach: SignalBreach, thread_id: str | None = None,
     interrupted = bool(result.get("__interrupt__"))
 
     return {
-        "breach_id": breach.breach_id,
+        "incident_id": incident.incident_id,
+        "breach_id": incident.primary.breach_id,
         "thread_id": thread_id,
         "waiting_for_human": interrupted,
         "interrupt": _describe_interrupt(result) if interrupted else None,
@@ -133,7 +131,7 @@ def investigate(breach: SignalBreach, thread_id: str | None = None,
     }
 
 
-def resume(thread_id: str, breach: SignalBreach, approve: bool,
+def resume(thread_id: str, incident: Incident, approve: bool,
            note: str = "", checkpointer=None) -> dict:
     """Answer a paused investigation: yes or no, with a reason.
 
@@ -143,7 +141,7 @@ def resume(thread_id: str, breach: SignalBreach, approve: bool,
     from langgraph.types import Command
 
     saver = checkpointer or InMemorySaver()
-    agent = build_supervisor(breach, saver)
+    agent = build_supervisor(incident, saver)
     config = {"configurable": {"thread_id": thread_id}}
 
     decision = {"type": "accept" if approve else "reject"}
@@ -152,7 +150,7 @@ def resume(thread_id: str, breach: SignalBreach, approve: bool,
 
     result = agent.invoke(Command(resume=[decision]), config)
     return {
-        "breach_id": breach.breach_id,
+        "incident_id": incident.incident_id,
         "approved": approve,
         "handover": result["messages"][-1].content if result.get("messages") else "",
         "steps": _steps(result),

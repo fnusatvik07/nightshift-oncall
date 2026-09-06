@@ -221,6 +221,85 @@ clock, and a slow clock must not make the dashboard time out.
 
 ---
 
+## Correlate before you page
+
+Suppression stops the same breach being raised twice. **Correlation stops one
+cause being raised six times**, and it is the difference between a service that
+scales and one that becomes the outage.
+
+Thirteen signals watch one warehouse. When a pipeline dies, this happens in a
+single cycle:
+
+```
+pipelines_failing        1        the pipeline failed
+warehouse_lag_hours     26        so gold is a day behind
+rides_per_day        4,102        so yesterday looks quiet
+revenue_per_day    612,000        so revenue looks down
+fare_coverage_pct     71.2        so fares look missing
+records_held         3,140        and the held pile grew
+```
+
+Six records means six investigations, six pages, six tickets, six times the
+model spend, and a person who has to work out they are the same thing before
+they can start.
+
+### The rules, in order
+
+| | Rule | Because |
+|---|---|---|
+| 1 | more than half the board moved | that is never six separate problems |
+| 2 | `pipelines_failing` or `warehouse_lag_hours` moved | every other number is downstream of work that did not happen |
+| 3 | signals watching the same table moved together | they are one story about that table |
+| 4 | otherwise | separate incidents, one each |
+
+Rule 2 earns its keep. If the pipeline did not run, then rides, revenue and
+coverage are all wrong **because of that**, and investigating them separately is
+five wasted investigations that end at the same sentence.
+
+The rules are deliberately conservative: **a rule that groups two genuinely
+separate problems is worse than one that misses a grouping**, because the second
+costs money and the first costs a missed incident.
+
+```bash
+python cli.py incidents
+
+  incident         lead signal            sev       signals  status     owners
+  INCA8AD829398    pipelines_failing      critical        4  diagnosed  data-platform, finance, pricing
+```
+
+The agent receives the incident with the lead signal and the others attached as
+corroboration, which is also better evidence: six signals moving together says
+far more than one moving alone.
+
+---
+
+## Invariants: the middle checkpoint
+
+A signal watches a number that is **usually** in a range. An invariant is a
+statement that is **never** allowed to be false.
+
+```bash
+python cli.py invariants
+curl localhost:8091/invariants
+```
+
+Seventeen of them, across four layers. Every one is a query that returns **the
+rows that violate it**, so a failure hands you the evidence rather than a
+boolean and a hunt.
+
+| Layer | Examples |
+|---|---|
+| bronze | a ride appears once; every status is one of the four agreed ones |
+| silver | one row per ride; silver loses no rides and invents none; no negative fare |
+| gold | the aggregate equals the rows underneath it; parts never exceed the whole |
+| platform | no run stuck at "running"; every held record has a reason |
+
+**A signal that fires is a question for a human. An invariant that fires is a
+defect.** If you find yourself wanting to write "usually" into one, it is a
+signal and it belongs in `kpis.py`.
+
+---
+
 ## Suppression
 
 The board runs every minute. A broken pipeline stays broken for hours. Without

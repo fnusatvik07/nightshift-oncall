@@ -268,9 +268,35 @@ a file, so everything it reports came from a query. Narrow the toolbox and the
 method emerges from the constraint rather than from a longer prompt.
 
 ```bash
-python cli.py incidents               # what has breached
+python cli.py incidents               # one row per cause, not per signal
+python cli.py invariants              # the things that must always be true
 python cli.py investigate surge_coverage_pct   # run the five, by hand
 ```
+
+### It groups before it pages
+
+Thirteen signals watch one warehouse, so a dead pipeline breaches six of them at
+once. Emitting six records means six investigations for one cause.
+
+```
+  incident         lead signal            sev       signals  status     owners
+  INCA8AD829398    pipelines_failing      critical        4  diagnosed  data-platform, finance, pricing
+```
+
+One incident, led by the most upstream signal, with the others attached as
+corroboration. Six signals moving together is far better evidence than one
+moving alone.
+
+### Two checks, not one
+
+| | watches | fires when | means |
+|---|---|---|---|
+| **a signal** | a number that is *usually* in a range | it drifts | a question for a human |
+| **an invariant** | a statement that is *never* false | it is false | a defect |
+
+Seventeen invariants across bronze, silver, gold and the run log. Each returns
+**the rows that violate it**, so a failure hands you the evidence rather than a
+boolean.
 
 ### What it produces, and what it refuses
 
@@ -285,7 +311,22 @@ python cli.py investigate surge_coverage_pct   # run the five, by hand
 The warehouse connection is opened `read_only`, so Postgres itself refuses a
 write regardless of what the model asked for. A proposed edit is parsed before a
 human is asked to look at it, because whether a change is right is a judgement
-but whether it compiles is a fact.
+but whether it compiles is a fact. Each proposal is applied in its **own git
+worktree**, so two investigations cannot see each other's files and the tree you
+are sitting in is never touched.
+
+**187 tests hold those guards in place**, and they need no database:
+
+```bash
+pytest
+```
+
+The pull request target is configurable, because in a real estate the pipelines
+live in their own repository with their own reviewers:
+
+```bash
+ONCALL_REPO_PATH=/path/to/the/pipelines/repo
+```
 
 ### Confluence, optionally
 

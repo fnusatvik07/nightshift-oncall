@@ -20,7 +20,7 @@ import datetime as dt
 
 import psycopg
 
-from events.contract import SignalBreach
+from events.contract import Incident, SignalBreach
 from pipelines.lib.config import dsn
 
 SCHEMA = "oncall"
@@ -61,6 +61,27 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.breaches (
 );
 CREATE INDEX IF NOT EXISTS ix_breaches_status ON {SCHEMA}.breaches (status, detected_at DESC);
 CREATE INDEX IF NOT EXISTS ix_breaches_fp     ON {SCHEMA}.breaches (fingerprint, detected_at DESC);
+
+-- One cause, however many signals noticed it. A pipeline dying breaches six
+-- signals; this is the row that says those six were one thing.
+CREATE TABLE IF NOT EXISTS {SCHEMA}.incidents (
+    incident_id  TEXT PRIMARY KEY,
+    detected_at  TIMESTAMPTZ NOT NULL,
+    primary_kpi  TEXT NOT NULL,
+    severity     TEXT NOT NULL,
+    owners       TEXT NOT NULL,
+    correlation  TEXT NOT NULL,
+    signal_count INT NOT NULL DEFAULT 1,
+    payload      JSONB NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'open',
+    dispatched_at TIMESTAMPTZ,
+    handled_at    TIMESTAMPTZ,
+    outcome       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_incidents_status
+    ON {SCHEMA}.incidents (status, detected_at DESC);
+
+ALTER TABLE {SCHEMA}.breaches ADD COLUMN IF NOT EXISTS incident_id TEXT;
 """
 
 
@@ -157,3 +178,52 @@ def load(breach_id: str) -> SignalBreach | None:
         return None
     payload = row[0]
     return SignalBreach.model_validate(payload)
+
+
+# ── incidents ──────────────────────────────────────────────────────────────
+
+def record_incident(incident: Incident) -> None:
+    """Keep the incident, and point every breach in it at the incident."""
+    with psycopg.connect(dsn(), autocommit=True) as c:
+        c.execute(
+            f"""INSERT INTO {SCHEMA}.incidents
+                (incident_id, detected_at, primary_kpi, severity, owners,
+                 correlation, signal_count, payload)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (incident_id) DO NOTHING""",
+            (incident.incident_id, incident.detected_at, incident.primary.kpi,
+             incident.severity, ", ".join(incident.owners), incident.correlation,
+             incident.signal_count, incident.model_dump_json()))
+        for b in incident.breaches:
+            c.execute(f"UPDATE {SCHEMA}.breaches SET incident_id = %s WHERE breach_id = %s",
+                      (incident.incident_id, b.breach_id))
+
+
+def mark_incident(incident_id: str, status: str, outcome: str = "") -> None:
+    column = {"dispatched": "dispatched_at"}.get(status, "handled_at")
+    with psycopg.connect(dsn(), autocommit=True) as c:
+        c.execute(
+            f"""UPDATE {SCHEMA}.incidents
+                SET status = %s, {column} = %s,
+                    outcome = coalesce(nullif(%s, ''), outcome)
+                WHERE incident_id = %s""",
+            (status, dt.datetime.now(dt.timezone.utc), outcome, incident_id))
+
+
+def open_incidents(limit: int = 25) -> list[dict]:
+    with psycopg.connect(dsn()) as c:
+        rows = c.execute(
+            f"""SELECT incident_id, primary_kpi, severity, owners, signal_count,
+                       detected_at, status, left(coalesce(outcome, ''), 200)
+                FROM {SCHEMA}.incidents
+                ORDER BY detected_at DESC LIMIT %s""", (limit,)).fetchall()
+    keys = ("incident_id", "primary_kpi", "severity", "owners", "signal_count",
+            "detected_at", "status", "outcome")
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def load_incident(incident_id: str) -> Incident | None:
+    with psycopg.connect(dsn()) as c:
+        row = c.execute(f"SELECT payload FROM {SCHEMA}.incidents WHERE incident_id = %s",
+                        (incident_id,)).fetchone()
+    return Incident.model_validate(row[0]) if row else None

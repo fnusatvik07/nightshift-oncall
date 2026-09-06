@@ -41,6 +41,9 @@ def publish_incident_page(
     what_to_do: str,
     appendix: str = "",
     confidence: str = "medium",
+    proposed_change: str = "",
+    change_diff: str = "",
+    pull_request: str = "",
 ) -> str:
     """Publish the incident page to Confluence, with a diagram, and return its URL.
 
@@ -61,6 +64,13 @@ def publish_incident_page(
     what_it_means      the business consequence, in the owner's language
     what_to_do         numbered steps, one per line, that somebody could follow
     appendix           anything else worth keeping. Collapsed on the page
+    proposed_change    what should change, in words, whether or not you could
+                       raise a pull request. ALWAYS fill this in when you know
+                       the fix. A page that diagnoses and does not say what to
+                       change makes the reader do the work twice
+    change_diff        the unified diff, if propose_code_change produced one.
+                       Paste it exactly as that tool returned it
+    pull_request       the pull request URL, if one was opened
     """
     setup()
 
@@ -83,6 +93,9 @@ def publish_incident_page(
         ("Breach", f"<p><code>{cf.esc(breach_id)}</code></p>"),
         ("Detected", f"<p>{now}</p>"),
         ("Confidence", f"<p>{cf.esc(confidence)}</p>"),
+        ("Proposed fix", cf.status("pull request open", "Blue") if pull_request
+                         else (cf.status("written out below", "Yellow") if proposed_change
+                               else cf.status("none yet", "Grey"))),
         ("In one sentence", f"<p><strong>{cf.esc(summary)}</strong></p>"),
     ])
 
@@ -118,6 +131,33 @@ def publish_incident_page(
             if line.strip()]
     body += [cf.heading("What to do", 2), cf.steps(todo or [what_to_do])]
 
+    # ── the proposed change, whether or not a pull request exists ─────────
+    #
+    # This section is the difference between a page that diagnoses and a page
+    # somebody can act on. If a pull request was opened it is linked. If one
+    # could not be, the change is still spelled out here in full, because
+    # "there was no remote" is not a reason to make the reader work it out
+    # again from the evidence.
+    if proposed_change or change_diff or pull_request:
+        body += [cf.heading("The proposed change", 2)]
+
+        if pull_request:
+            body += [cf.panel("tip",
+                f"<p>A pull request is open: {cf.link(pull_request, pull_request)}"
+                f"</p><p><strong>Nothing has been merged and no data has been "
+                f"changed.</strong> Reviewing it is a human decision.</p>")]
+        else:
+            body += [cf.panel("note",
+                "<p>No pull request could be opened, so the change is written out "
+                "in full below. Apply it by hand, or point the agent at a "
+                "repository with a remote and it will raise one.</p>")]
+
+        if proposed_change:
+            body += [cf.para(proposed_change)]
+
+        if change_diff:
+            body += [cf.code(change_diff.strip(), "diff", "the exact change")]
+
     body += [
         cf.heading("Who owns this", 2),
         cf.table([
@@ -126,6 +166,7 @@ def publish_incident_page(
             ("What does the signal watch", kpi),
             ("Where does the value break", broken_at),
             ("Has anything been changed", "No. This system proposes only."),
+            ("Is there a pull request", pull_request or "no, see the change above"),
         ], widths=(260, 580)),
     ]
 
