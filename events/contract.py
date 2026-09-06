@@ -45,6 +45,17 @@ class SignalBreach(BaseModel):
     deviation: float = Field(description="how far from baseline, in the unit of the kpi")
     z_score: float | None = Field(default=None, description="only when the baseline came from history")
 
+    # How the baseline was decided, which changes what a deviation MEANS.
+    #
+    # Without this the record says "value 97.3, baseline 100.0" and the reader
+    # has to guess whether 2.7 is a lot. It depends entirely on where the 100
+    # came from: an average of noisy days, where 2.7 is nothing, or a rule that
+    # is normally exact, where 2.7 means a release moved a field. Triage was
+    # dismissing real breaches for exactly this reason.
+    baseline_kind: Literal["a rule", "from history"] = "from history"
+    tolerance: float = Field(default=0.0, description="how far from a fixed baseline is still fine")
+    normally: str = Field(default="", description="what this number does when nothing is wrong")
+
     # ── whose, and where to start ──────────────────────────────────────────
     severity: Severity = "medium"
     owner: str = Field(description="the team, by name. Not 'the data team'")
@@ -77,6 +88,18 @@ class SignalBreach(BaseModel):
         return (f"{self.kpi} is {arrow} at {self.value:,.3f}{self.unit} "
                 f"against a baseline of {self.baseline:,.3f}{self.unit} "
                 f"({self.severity}, {self.owner})")
+
+    def how_unusual(self) -> str:
+        """Say plainly how far from normal this is, in terms of how normal was set."""
+        if self.baseline_kind == "a rule":
+            allowed = f", and anything past {self.tolerance:g} is a breach" if self.tolerance \
+                      else ", and any deviation at all is a breach"
+            return (f"the baseline is A RULE somebody decided, not an average"
+                    f"{allowed}. {self.normally}")
+        if self.z_score is not None:
+            return (f"the baseline is the mean of {len(self.history)} previous readings, "
+                    f"and this is {abs(self.z_score):.1f} standard deviations from it")
+        return "the baseline came from history"
 
 
 class Incident(BaseModel):
@@ -134,6 +157,7 @@ class Incident(BaseModel):
         lines += [f"    {b.kpi}  ({b.title})",
                   f"    value {b.value}{b.unit}, normally {b.baseline}{b.unit}, "
                   f"{b.direction}",
+                  f"    HOW UNUSUAL: {b.how_unusual()}",
                   f"    watches {b.watches}",
                   f"    means   {b.means}"]
         if self.related:

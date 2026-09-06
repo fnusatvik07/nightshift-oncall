@@ -202,4 +202,22 @@ def to_breach(kpi: KPI, reading: Reading, verdict: Verdict) -> SignalBreach:
         means=kpi.means,
         history=reading.history[:14],
         evaluated_sql=" ".join(kpi.sql.split()),
+        baseline_kind="a rule" if kpi.judgement == "fixed" else "from history",
+        tolerance=kpi.tolerance,
+        normally=_normally(kpi),
     )
+
+
+def _normally(kpi: KPI) -> str:
+    """One sentence about what this number does when nothing is wrong.
+
+    Written for whoever reads the breach, human or agent. "97.3 against a
+    baseline of 100" means nothing until you know whether the 100 wobbles.
+    """
+    if kpi.judgement != "fixed":
+        return "this number varies from day to day, so the baseline is an average."
+    if kpi.tolerance:
+        return (f"this number sits at {kpi.baseline:g}{kpi.unit} when the platform is "
+                f"healthy, give or take {kpi.tolerance:g}.")
+    return (f"this number is exactly {kpi.baseline:g}{kpi.unit} when the platform is "
+            f"healthy. Not approximately: exactly.")

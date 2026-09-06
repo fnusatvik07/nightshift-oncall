@@ -20,7 +20,7 @@
 
 <br>
 
-**Nineteen notebooks · Eight pipelines · Six sources · Thirteen KPIs · Five agents · One command**
+**A 90 minute class · Nineteen notebooks · Eight pipelines · Six sources · Thirteen KPIs · Five agents · One command**
 
 <br>
 
@@ -251,12 +251,17 @@ an attached architecture diagram, changing no agent code.
 
 ## The nineteen notebooks
 
-Run them in order. Each one holds runnable code in its cells, not a description
-of code that lives elsewhere.
+### Start here: `00-the-class.ipynb`
 
-**About to teach this?** [teaching.md](docs/teaching.md) opens with a reading
-order for yourself, then seven session plans. Notebook 19 is the guided tour of
-the source, for when somebody asks how it is actually built.
+**One notebook, ninety minutes, run live in front of a room.** It assumes no
+prior knowledge, teaches each concept before showing any code, and ends with the
+whole system running unattended. Timings are marked, so you can pace it.
+
+> 00 to 15 the problem · 15 to 30 a KPI is not a signal · 30 to 45 the service ·
+> 45 to 65 what an agent actually is · 65 to 80 the boundaries · 80 to 90 all of it
+
+The nineteen below are the deep course. Run them in order; each holds runnable
+code in its cells, not a description of code that lives elsewhere.
 
 <table>
 <tr><td valign="top" width="50%">
