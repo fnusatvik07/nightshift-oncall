@@ -1,0 +1,312 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# The estate.
+#
+# Six systems the course reads from, one orchestrator, and three browser GUIs
+# so everything can be shown on a screen rather than described.
+#
+# Every port below can be changed in .env if something on your machine already
+# uses it. Nothing in the pipelines hardcodes an address: they all read .env.
+#
+#   docker compose -f platform/docker-compose.yml up -d
+#   docker compose -f platform/docker-compose.yml ps
+#   docker compose -f platform/docker-compose.yml down          keep the data
+#   docker compose -f platform/docker-compose.yml down -v       delete the data
+# ═══════════════════════════════════════════════════════════════════════════
+name: nightshift
+
+services:
+
+  # ── the app database, and the processor's database ───────────────────────
+  # One Postgres instance holding three separate databases: kerb (the app),
+  # paynimbus (a different company), and airflow (an orchestrator's own notes).
+  # Separate databases, because none of those three should be joinable to the
+  # others by accident.
+  postgres:
+    image: postgres:16-alpine
+    container_name: nightshift-postgres
+    environment:
+      POSTGRES_DB: kerb
+      POSTGRES_USER: ${POSTGRES_USER:-kerb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kerb_local_dev}
+    ports: ["${POSTGRES_PORT:-5434}:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kerb} -d kerb"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "max_wal_size=2GB"
+
+  # ── the driver app's event store ─────────────────────────────────────────
+  # A document store, which means no schema, which means every mobile release
+  # can change the shape of what arrives. Notebook 4 is about exactly that.
+  mongo:
+    image: mongo:7
+    container_name: nightshift-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-kerb}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-kerb_local_dev}
+    ports: ["${MONGO_PORT:-27019}:27017"]
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ── the event stream ─────────────────────────────────────────────────────
+  # Redpanda speaks the Kafka protocol, so every line of Kafka code in this
+  # course is real Kafka code. It is here instead of Kafka itself because it
+  # is one container rather than three and needs no ZooKeeper.
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: nightshift-redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --overprovisioned
+      - --node-id 0
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:9092,OUTSIDE://localhost:${REDPANDA_PORT:-19092}
+      - --mode dev-container
+      # Bound the memory. Left to itself Redpanda claims a large share of what
+      # the machine has, and on a laptop already running Postgres, Mongo and
+      # Airflow that ends with the kernel killing it mid lesson. 1G is ample
+      # for a course dataset.
+      - --memory 1G
+      - --reserve-memory 0M
+    ports: ["${REDPANDA_PORT:-19092}:19092", "${REDPANDA_ADMIN_PORT:-9644}:9644"]
+    volumes:
+      - rpdata:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 6s
+      timeout: 5s
+      retries: 20
+
+  # ── object storage ───────────────────────────────────────────────────────
+  # MinIO speaks the S3 API, so the file pipeline in notebook 6 is the same
+  # code you would write against real S3 with a different endpoint.
+  minio:
+    image: minio/minio:RELEASE.2024-09-22T00-33-43Z
+    container_name: nightshift-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-kerbadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-kerb_local_dev}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 6s
+      timeout: 5s
+      retries: 20
+
+  # ── the payment processor ────────────────────────────────────────────────
+  # A different company, with its own database and no route to kerb. The only
+  # way to learn anything from it is to ask over HTTP.
+  partner-api:
+    build: ./partner_api
+    container_name: nightshift-partner-api
+    environment:
+      PN_DSN: "host=postgres port=5432 dbname=paynimbus user=${POSTGRES_USER:-kerb} password=${POSTGRES_PASSWORD:-kerb_local_dev}"
+      # what share of resolved settlements arrive with an unreadable status.
+      # Set it to 0 for a clean run, or higher for a dramatic one.
+      PN_EMPTY_STATUS_SHARE: "${PN_EMPTY_STATUS_SHARE:-0.34}"
+    ports: ["${PARTNER_API_PORT:-8088}:8088"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8088/health')\""]
+      interval: 6s
+      timeout: 4s
+      retries: 20
+
+  # ── the orchestrator ─────────────────────────────────────────────────────
+  # A real scheduler with a real UI, running the real DAG from this repo. Not a
+  # file in a folder that somebody describes. If a schedule is going to be
+  # shown to a room, it has to be a schedule that fires.
+  #
+  # The project is mounted at /opt/kerb/teach, and the DAG runs exactly the
+  # commands you would type yourself.
+  airflow:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: nightshift-airflow
+    restart: unless-stopped
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-kerb}:${POSTGRES_PASSWORD:-kerb_local_dev}@postgres:5432/airflow
+      AIRFLOW__WEBSERVER__WORKERS: "2"
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "10"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_USER:-kerb}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_PASSWORD:-kerb_local_dev}
+      # the addresses a pipeline needs, as seen from INSIDE this container.
+      # Note they are service names, not localhost. config.py loads .env with
+      # override=False, so these win, and not one line of pipeline code changes.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: kerb
+      POSTGRES_USER: ${POSTGRES_USER:-kerb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kerb_local_dev}
+      MONGO_URI: mongodb://${MONGO_USER:-kerb}:${MONGO_PASSWORD:-kerb_local_dev}@mongo:27017/kerb_app?authSource=admin
+      REDPANDA_BROKERS: redpanda:9092
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-kerbadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-kerb_local_dev}
+      PARTNER_API: http://partner-api:8088
+      PYTHONPATH: /opt/kerb/teach
+    volumes:
+      - ../airflow/dags:/opt/airflow/dags
+      - ..:/opt/kerb/teach:ro          # the project the DAG runs
+      - airflow_logs:/opt/airflow/logs
+    ports: ["${AIRFLOW_PORT:-8080}:8080"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    command: >
+      bash -c "airflow db migrate &&
+               airflow users create --username $${_AIRFLOW_WWW_USER_USERNAME}
+                 --password $${_AIRFLOW_WWW_USER_PASSWORD} --firstname KERB
+                 --lastname Data --role Admin --email data@kerb.example || true &&
+               (airflow scheduler & exec airflow webserver)"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 90s
+
+  # ── browser GUIs, so the data can be shown and not just described ────────
+  pgweb:
+    image: sosedoff/pgweb:latest
+    container_name: nightshift-pgweb
+    environment:
+      PGWEB_DATABASE_URL: postgres://${POSTGRES_USER:-kerb}:${POSTGRES_PASSWORD:-kerb_local_dev}@postgres:5432/kerb?sslmode=disable
+    ports: ["${PGWEB_PORT:-8081}:8081"]
+    depends_on: {postgres: {condition: service_healthy}}
+
+  mongo-express:
+    image: mongo-express:1
+    container_name: nightshift-mongo-express
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER:-kerb}:${MONGO_PASSWORD:-kerb_local_dev}@mongo:27017/?authSource=admin
+      ME_CONFIG_BASICAUTH: "false"
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+    ports: ["${MONGO_EXPRESS_PORT:-8082}:8081"]
+    depends_on: {mongo: {condition: service_healthy}}
+
+  redpanda-console:
+    image: redpandadata/console:v2.7.2
+    container_name: nightshift-redpanda-console
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports: ["${REDPANDA_CONSOLE_PORT:-8083}:8080"]
+    depends_on: {redpanda: {condition: service_healthy}}
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # The two services this project is about.
+  #
+  # Three containers, because the signal board is genuinely two things: an API
+  # that answers questions, and a clock that asks them. Keeping them apart
+  # means a dashboard hammering /signals cannot slow the clock down, and a slow
+  # clock cannot make the dashboard time out.
+  #
+  # All three read ../.env for the model and Atlassian keys, so no secret is
+  # written into this file.
+  # ═════════════════════════════════════════════════════════════════════════
+
+  signal-api:
+    build:
+      context: ..
+      dockerfile: platform/services/Dockerfile
+    container_name: nightshift-signal-api
+    restart: unless-stopped
+    command: >
+      uvicorn signal_service.api:app --host 0.0.0.0 --port 8091
+    env_file: [../.env]
+    environment: &service_env
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: kerb
+      POSTGRES_USER: ${POSTGRES_USER:-kerb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kerb_local_dev}
+      MONGO_URI: mongodb://${MONGO_USER:-kerb}:${MONGO_PASSWORD:-kerb_local_dev}@mongo:27017/kerb_app?authSource=admin
+      REDPANDA_BROKERS: redpanda:9092
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-kerbadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-kerb_local_dev}
+      PARTNER_API: http://partner-api:8088
+      SIGNAL_SERVICE_URL: http://signal-api:8091
+      AGENT_SERVICE_URL: http://agent:8092
+    volumes:
+      - ..:/app
+    ports: ["${SIGNAL_API_PORT:-8091}:8091"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8091/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # The clock. This is the thing that makes it a service rather than a command.
+  signal-scheduler:
+    build:
+      context: ..
+      dockerfile: platform/services/Dockerfile
+    container_name: nightshift-signal-scheduler
+    restart: unless-stopped
+    command: >
+      python -m signal_service.scheduler --every ${SIGNAL_INTERVAL:-60}
+    env_file: [../.env]
+    environment: *service_env
+    volumes:
+      - ..:/app
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  # Asleep until a record arrives.
+  agent:
+    build:
+      context: ..
+      dockerfile: platform/services/Dockerfile
+    container_name: nightshift-agent
+    restart: unless-stopped
+    command: >
+      uvicorn agent_service.worker:app --host 0.0.0.0 --port 8092
+    env_file: [../.env]
+    environment: *service_env
+    volumes:
+      - ..:/app
+    ports: ["${AGENT_PORT:-8092}:8092"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8092/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  pgdata:
+  mongodata:
+  rpdata:
+  miniodata:
+  airflow_logs:

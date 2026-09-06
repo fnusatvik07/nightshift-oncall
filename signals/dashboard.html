@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Signal board</title>
+<style>
+  :root{
+    --ink:#111114; --paper:#fff; --page:#F5F5F7;
+    --line:#E4E4E7; --mute:#6B7280;
+    --ok:#047857; --okbg:#ECFDF5; --bad:#B91C1C; --badbg:#FEF2F2; --blue:#1D4ED8;
+    --sans:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    --mono:"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--sans);background:var(--page);color:var(--ink);padding:28px 34px 60px}
+  header{display:flex;align-items:baseline;gap:20px;flex-wrap:wrap;margin-bottom:8px}
+  h1{font-size:27px;letter-spacing:-.4px}
+  .sub{color:var(--mute);font-size:16px;max-width:760px;line-height:1.55}
+  .clock{margin-left:auto;font-family:var(--mono);font-size:14px;color:var(--mute)}
+
+  .summary{border-radius:12px;padding:18px 22px;margin:22px 0;font-size:17px;line-height:1.6}
+  .summary.ok{background:var(--okbg);color:var(--ok);box-shadow:inset 0 0 0 2px var(--ok)}
+  .summary.bad{background:var(--badbg);color:var(--bad);box-shadow:inset 0 0 0 2px var(--bad)}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(430px,1fr));gap:16px;
+    align-items:start}
+  .card{background:var(--paper);border-radius:12px;padding:22px 24px;cursor:pointer;
+    border-top:5px solid var(--ok);box-shadow:0 1px 3px rgba(0,0,0,.07);transition:.14s}
+  .card:hover{box-shadow:0 6px 18px rgba(0,0,0,.11);transform:translateY(-1px)}
+  .card.bad{border-top-color:var(--bad)}
+  .top{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:14px}
+  .nm{font-family:var(--mono);font-size:16px;font-weight:700}
+  .pill{font-size:10.5px;font-weight:800;letter-spacing:.12em;padding:5px 11px;border-radius:20px;
+    background:var(--ok);color:#fff}
+  .card.bad .pill{background:var(--bad)}
+  .val{font-family:var(--mono);font-size:40px;font-weight:700;line-height:1;letter-spacing:-.02em}
+  .card.bad .val{color:var(--bad)}
+  .val small{font-size:17px;color:var(--mute);margin-left:7px;font-weight:500}
+  .base{font-family:var(--mono);font-size:12.5px;color:var(--mute);margin-top:8px}
+  .means{font-size:14.5px;line-height:1.65;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+  .foot{display:flex;gap:28px;flex-wrap:wrap;margin-top:16px}
+  .foot div{display:flex;flex-direction:column;gap:3px}
+  .lbl{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+  .vl{font-family:var(--mono);font-size:12.5px;font-weight:700}
+  .more{margin-top:16px;font-size:13px;font-weight:600;color:var(--blue)}
+  .sqlbox{display:none;margin-top:14px;padding-top:14px;border-top:2px solid var(--line)}
+  .card.open .sqlbox{display:block} .card.open .more{display:none}
+  .sqlbox h5{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);
+    margin-bottom:9px}
+  pre{font-family:var(--mono);font-size:12.5px;line-height:1.6;background:#0F172A;color:#E2E8F0;
+    padding:15px 17px;border-radius:8px;overflow-x:auto;white-space:pre-wrap}
+
+  h2{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);
+    margin:36px 0 12px}
+  table{width:100%;border-collapse:collapse;background:var(--paper);border-radius:12px;
+    overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  th{text-align:left;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--mute);
+    padding:14px 18px;border-bottom:1px solid var(--line)}
+  td{padding:12px 18px;font-size:14px;border-bottom:1px solid var(--line);font-family:var(--mono)}
+  tr:last-child td{border-bottom:0}
+  td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .st{font-family:var(--sans);font-weight:700;font-size:12px}
+  .st.success{color:var(--ok)} .st.failed{color:var(--bad)}
+</style></head><body>
+
+<header>
+  <div>
+    <h1>Signal board</h1>
+    <div class="sub">Six numbers, each with a baseline and an owner. This page runs the same
+      queries as <code>python cli.py board</code>. It is a nicer way to read the answer, not a
+      different system.</div>
+  </div>
+  <div class="clock" id="clock">loading</div>
+</header>
+
+<div class="summary" id="summary"></div>
+<div class="grid" id="grid"></div>
+
+<h2>Pipeline runs</h2>
+<table><thead><tr><th>pipeline</th><th>status</th><th class="n">read</th><th class="n">wrote</th>
+<th>at</th><th>message</th></tr></thead><tbody id="runs"></tbody></table>
+
+<h2>What is in the schema</h2>
+<table><thead><tr><th>table</th><th class="n">rows</th></tr></thead><tbody id="tables"></tbody></table>
+
+<script>
+const esc = s => String(s ?? "").replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+const num = n => Number(n).toLocaleString(undefined,{maximumFractionDigits:3});
+
+async function load(){
+  const [sigs, ops] = await Promise.all([
+    fetch("/api/signals").then(r=>r.json()),
+    fetch("/api/runs").then(r=>r.json())]);
+
+  const bad = sigs.filter(s=>s.breached);
+  const sum = document.getElementById("summary");
+  sum.className = "summary " + (bad.length ? "bad" : "ok");
+  sum.innerHTML = bad.length
+    ? `<b>${bad.length} signal${bad.length>1?"s have":" has"} moved.</b> ${bad.map(s=>s.name).join(", ")}.
+       That is a detection, not a diagnosis: we know a number is wrong and we do not yet know why.`
+    : `<b>All ${sigs.length} signals are where they should be.</b> Nothing to do.`;
+
+  document.getElementById("grid").innerHTML = [...sigs]
+    .sort((a,b)=>(b.breached?1:0)-(a.breached?1:0)).map(s=>`
+    <div class="card ${s.breached?"bad":""}">
+      <div class="top"><span class="nm">${esc(s.name)}</span>
+        <span class="pill">${s.breached?"MOVED":"OK"}</span></div>
+      <div class="val">${num(s.value)}<small>${esc(s.unit)}</small></div>
+      <div class="base">baseline ${num(s.baseline)} &nbsp;·&nbsp; ${esc(s.detail)}</div>
+      <div class="means">${esc(s.means)}</div>
+      <div class="foot">
+        <div><span class="lbl">watches</span><span class="vl">${esc(s.watches)}</span></div>
+        <div><span class="lbl">owner</span><span class="vl">${esc(s.owner)}</span></div>
+      </div>
+      <div class="more">+ &nbsp;see the query behind this number</div>
+      <div class="sqlbox"><h5>The query it runs</h5><pre>${esc(s.sql)}</pre></div>
+    </div>`).join("");
+  document.querySelectorAll(".card").forEach(c =>
+    c.onclick = () => c.classList.toggle("open"));
+
+  document.getElementById("runs").innerHTML = ops.runs.map(r=>`
+    <tr><td>${esc(r.pipeline)}</td><td class="st ${r.status}">${esc(r.status)}</td>
+    <td class="n">${num(r.rows_in)}</td><td class="n">${num(r.rows_out)}</td>
+    <td>${esc(r.at)}</td><td style="color:var(--mute)">${esc(r.message)}</td></tr>`).join("")
+    || `<tr><td colspan="6" style="color:var(--mute)">nothing has run yet</td></tr>`;
+
+  document.getElementById("tables").innerHTML = ops.tables.map(t=>`
+    <tr><td>${esc(t.name)}</td><td class="n">${num(t.rows)}</td></tr>`).join("");
+
+  document.getElementById("clock").textContent = new Date().toLocaleTimeString();
+}
+load(); setInterval(load, 5000);
+</script>
+</body></html>

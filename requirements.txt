@@ -1,0 +1,18 @@
+# Everything the course needs, and nothing it does not.
+#
+#     python3 -m venv .venv
+#     source .venv/bin/activate          # Windows: .venv\Scripts\activate
+#     pip install -r requirements.txt
+
+# ── talking to the six sources ────────────────────────────────────────────
+psycopg[binary]>=3.2,<4        # postgres. [binary] means no compiler needed
+confluent-kafka>=2.6,<3        # kafka and redpanda speak the same protocol
+pymongo>=4.10,<5               # mongodb
+minio>=7.2,<8                  # s3 compatible object storage
+python-dotenv>=1.0,<2          # reads .env, so no address is hardcoded
+
+# ── the notebooks ─────────────────────────────────────────────────────────
+jupyterlab>=4.2,<5
+nbformat>=5.10,<6              # notebooks/build_nb.py generates the lessons
+pandas>=2.2                    # only for formatting tables in the notebooks
+ipywidgets>=8.1,<9

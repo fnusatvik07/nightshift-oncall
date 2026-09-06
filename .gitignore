@@ -1,0 +1,22 @@
+# secrets. Never commit this. Copy .env.example instead.
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# built by the class, in notebook 12
+airflow/dags/teach_dag.py
+
+# diagram build output. The PNGs the notebooks use live in notebooks/img/,
+# which IS committed. This folder is the intermediate step.
+diagrams/png/
+
+# macOS
+.DS_Store
+
+# what the agents produced. Regenerated on every run, and pages can name real
+# systems, so they are not committed.
+artifacts/
