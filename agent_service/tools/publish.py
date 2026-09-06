@@ -37,7 +37,6 @@ import datetime as dt
 import os
 import pathlib
 import re
-import subprocess
 import threading
 import uuid
 
@@ -45,6 +44,8 @@ import psycopg
 from langchain.tools import tool
 
 from pipelines.lib.config import dsn
+
+from . import repo
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / "artifacts"
@@ -305,91 +306,33 @@ def raise_ticket(title: str, breach_id: str, owner: str, severity: str,
     return f"raised {ticket_id} for {owner} ({severity}, {kind})"
 
 
-# ── code changes: a branch and a pull request, never a merge ───────────────
-
-def _git(*args: str, check: bool = False) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True,
-                          text=True, timeout=60, check=check)
-
+# ── code changes: an isolated branch, and a pull request ───────────────────
 
 @tool
 def propose_code_change(breach_id: str, summary: str, rationale: str,
                         path: str, old_string: str, new_string: str) -> str:
     """Open a pull request containing one small code change. It is never merged.
 
-    Give the exact text to replace. The edit is applied on a new branch, the
-    result is checked for syntax, and a pull request is opened for a human.
+    Give the exact text to replace. The edit is applied on a branch in an
+    ISOLATED checkout, the result is checked for syntax, and a pull request is
+    opened if the repository has a remote.
 
-    Nothing on the main branch changes. Nothing in the database changes. If the
-    change does not parse, the branch is thrown away and you are told why.
+    Nothing on the main branch changes. Nothing in anybody's working tree
+    changes. Nothing in the database changes. If the change does not parse, it
+    is thrown away and you are told why.
 
-    path must be inside: pipelines/, signal_service/, signals/
+    Returns the branch, the pull request URL if one was opened, and the diff.
+    Put the diff on the incident page: a reviewer who cannot see the change
+    cannot review it.
+
+    path must be inside: pipelines/, signal_service/, signals/, agent_service/
     """
     setup()
-    target = (ROOT / path).resolve()
-    try:
-        rel = target.relative_to(ROOT)
-    except ValueError:
-        return f"REFUSED: {path!r} is outside the project."
-    if not rel.parts or rel.parts[0] not in WRITABLE:
-        return (f"REFUSED: {path!r} is not writable. "
-                f"Writable directories: {', '.join(WRITABLE)}")
-    if not target.is_file():
-        return f"REFUSED: {path!r} does not exist."
+    result = repo.propose(breach_id, summary, rationale, path,
+                          old_string, new_string, ARTIFACTS / "patches")
 
-    original = target.read_text()
-    if old_string not in original:
-        return ("REFUSED: that exact text is not in the file. Read it again with "
-                "read_source and copy the text precisely, whitespace included.")
-    if original.count(old_string) > 1:
-        return ("REFUSED: that text appears more than once. Include enough "
-                "surrounding lines to make it unique.")
-
-    updated = original.replace(old_string, new_string)
-
-    # Whether a change is right is a judgement. Whether it compiles is a fact,
-    # and facts are checked before a person is asked for an opinion.
-    if target.suffix == ".py":
-        try:
-            compile(updated, str(target), "exec")
-        except SyntaxError as e:
-            return f"REFUSED: the edited file would not parse. {e}"
-
-    if _git("rev-parse", "--git-dir").returncode != 0:
-        # No repository, so no pull request. Leave a patch and be honest.
-        patch = ARTIFACTS / "patches" / f"{breach_id}-{rel.name}.patch"
-        patch.write_text(f"--- a/{rel}\n+++ b/{rel}\n\n{old_string}\n>>>\n{new_string}\n")
-        return (f"no git repository here, so no pull request was opened.\n"
-                f"The proposed change is saved at {patch}")
-
-    branch = f"oncall/{breach_id.lower()}-{rel.stem}"[:60]
-    starting = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-
-    try:
-        if _git("checkout", "-b", branch).returncode != 0:
-            _git("checkout", branch)
-        target.write_text(updated)
-        _git("add", str(rel))
-        message = f"{summary}\n\n{rationale}\n\nRaised from breach {breach_id}."
-        commit = _git("commit", "-m", message)
-        if commit.returncode != 0:
-            target.write_text(original)
-            _git("checkout", starting)
-            return f"could not commit: {commit.stderr[:300]}"
-
-        pr_url = ""
-        gh = subprocess.run(
-            ["gh", "pr", "create", "--title", summary, "--body",
-             f"{rationale}\n\nRaised automatically from breach `{breach_id}`.\n\n"
-             f"**Nothing was merged and no data was changed.** Review, then decide.",
-             "--head", branch],
-            cwd=ROOT, capture_output=True, text=True, timeout=90)
-        if gh.returncode == 0:
-            pr_url = gh.stdout.strip().splitlines()[-1] if gh.stdout.strip() else ""
-        note = "" if pr_url else f" (no pull request opened: {gh.stderr.strip()[:160]})"
-    finally:
-        # always go back, so the working tree is where the human left it
-        _git("checkout", starting)
+    if not result.ok:
+        return result.reason
 
     request_id = f"CR-{uuid.uuid4().hex[:6].upper()}"
     with psycopg.connect(dsn(), autocommit=True) as c:
@@ -397,11 +340,11 @@ def propose_code_change(breach_id: str, summary: str, rationale: str,
                       (request_id, breach_id, kind, summary, detail, branch, pr_url)
                       VALUES (%s, %s, 'code', %s, %s, %s, %s)""",
                   (request_id, breach_id, summary,
-                   f"{rationale}\n\n--- {rel} ---\n{old_string}\n>>>\n{new_string}",
-                   branch, pr_url or None))
+                   f"{rationale}\n\n{result.diff}", result.branch,
+                   result.pr_url or None))
 
-    return (f"{request_id}: change committed to branch {branch}, main untouched.\n"
-            f"{pr_url or 'pull request not opened' + note}")
+    return (f"{request_id}: {result.summary()}\n\n"
+            f"THE DIFF, which belongs on the incident page:\n{result.diff}")
 
 
 # ── database changes: this one stops and asks ──────────────────────────────
