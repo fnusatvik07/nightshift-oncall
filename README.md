@@ -249,16 +249,26 @@ an attached architecture diagram, changing no agent code.
 
 ---
 
-## The nineteen notebooks
+## The notebooks
 
-### Start here: `00-the-class.ipynb`
+### Start here: the two class notebooks
 
-**One notebook, ninety minutes, run live in front of a room.** It assumes no
-prior knowledge, teaches each concept before showing any code, and ends with the
-whole system running unattended. Timings are marked, so you can pace it.
+**Run live in front of a room.** They assume no prior knowledge, and they build
+each service from nothing rather than importing the finished thing and narrating
+its output.
 
-> 00 to 15 the problem · 15 to 30 a KPI is not a signal · 30 to 45 the service ·
-> 45 to 65 what an agent actually is · 65 to 80 the boundaries · 80 to 90 all of it
+| | | |
+|:--|:--|:--|
+| `00-class-1-building-the-signal-service.ipynb` | a number goes wrong and nothing fails, then twelve steps that become `signal_service/` | |
+| `00-class-2-building-the-agent-system.ipynb` | a tool, a loop, a typed answer, then five agents and the four boundaries | |
+
+Notebook 2 ends on the command that shows the whole thing working:
+
+```
+python cli.py investigate surge_coverage_pct
+```
+
+Both open and close with a reset cell, so the same lesson can be taught twice.
 
 The nineteen below are the deep course. Run them in order; each holds runnable
 code in its cells, not a description of code that lives elsewhere.
