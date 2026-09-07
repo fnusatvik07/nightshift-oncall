@@ -122,9 +122,24 @@ def forget_artifacts() -> None:
     for b in branches:
         subprocess.run(["git", "-C", str(ROOT), "branch", "-D", b],
                        capture_output=True, text=True)
+    # And the worktrees. `prune` alone is not enough: an investigation killed
+    # half way through leaves its checkout LOCKED, prune skips locked ones by
+    # design, and the next `git worktree add` then blocks until it times out
+    # ninety seconds later. A demo that hangs for ninety seconds is a demo that
+    # is over, so unlock them first and then remove them.
+    listing = subprocess.run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"],
+                             capture_output=True, text=True).stdout
+    trees = [ln.split(" ", 1)[1] for ln in listing.splitlines()
+             if ln.startswith("worktree ") and "oncall-" in ln]
+    for tree in trees:
+        subprocess.run(["git", "-C", str(ROOT), "worktree", "unlock", tree],
+                       capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", tree],
+                       capture_output=True, text=True)
     subprocess.run(["git", "-C", str(ROOT), "worktree", "prune"],
                    capture_output=True, text=True)
-    print(f"  git        deleted {len(branches)} leftover oncall/ branch(es)")
+    print(f"  git        deleted {len(branches)} leftover oncall/ branch(es) "
+          f"and {len(trees)} stale worktree(s)")
 
 
 def main() -> int:
