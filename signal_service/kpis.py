@@ -339,7 +339,14 @@ CATALOGUE: list[KPI] = [
               "processor changed something, and money is sitting in a state no "
               "report has a column for.",
         unit="%",
-        judgement="fixed", baseline=100.0, tolerance=40.0, severity="medium",
+        # Tolerance of 40 was too tight and this signal flapped. The processor
+        # answers a large and VARIABLE share of what it is asked on any given
+        # run, and everything it has not answered yet is held rather than
+        # guessed, so a healthy day sits anywhere from about 40% to about 70%.
+        # A signal that goes red on a healthy day teaches people to ignore it.
+        # 20 is the line worth waking somebody for: below that the processor has
+        # stopped answering rather than being busy.
+        judgement="fixed", baseline=100.0, tolerance=80.0, severity="medium",
         watch_direction="below",
         sql=f"""
             SELECT coalesce(round(100.0 * (SELECT count(*) FROM {SCHEMA}.bronze_settlements)

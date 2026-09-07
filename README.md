@@ -270,6 +270,20 @@ python cli.py investigate surge_coverage_pct
 
 Both open and close with a reset cell, so the same lesson can be taught twice.
 
+### And three scenarios, one command each
+
+```
+just scenarios          what can be broken, which signal notices, and who owns it
+just scenario-surge     pricing · a field moved, and the fix is a pull request
+just scenario-zones     operations · a stale dimension, and the code is right
+just scenario-stale     data-platform · a job did not run, and FIVE signals move
+just fix                put everything back
+```
+
+Each one resets, breaks something different, and runs the agents on it. They
+produce three genuinely different Confluence pages, because the evidence is
+genuinely different. `just` on its own lists every recipe.
+
 The nineteen below are the deep course. Run them in order; each holds runnable
 code in its cells, not a description of code that lives elsewhere.
 

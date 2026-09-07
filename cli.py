@@ -19,6 +19,7 @@
     python cli.py invariants          the things that must always be true
     python cli.py incidents           what has breached, and what came of it
     python cli.py investigate <kpi>   run the agents, showing every step live
+    python cli.py investigate board   group everything red, work the worst one
 
 Everything is safe to run twice. Everything can be undone with `reset`.
 """
@@ -289,9 +290,33 @@ def cmd_investigate(a) -> int:
             return 1
         incident = correlate.group([breach], board_size=len(BY_NAME))[0]
         store.record_incident(incident)
+    elif target == "board":
+        # Evaluate everything, group it, and work the worst one.
+        #
+        # `investigate <kpi>` builds an incident out of that one signal, which is
+        # right when you already know which number you care about and wrong for
+        # showing what correlation is FOR. A job that did not run breaches five
+        # signals; investigating one of them five times is the behaviour this
+        # whole grouping layer exists to prevent.
+        breaches = [ev.to_breach(k, r, v) for k, r, v in ev.evaluate_all() if v.breached]
+        if not breaches:
+            print("\n  nothing is breached. Break something first: "
+                  "python break_it.py --list\n")
+            return 0
+        for b in breaches:
+            store.record(b)
+        incidents = correlate.group(breaches, board_size=len(BY_NAME))
+        for i in incidents:
+            store.record_incident(i)
+        print(f"\n  {len(breaches)} breached signal(s) grouped into "
+              f"{len(incidents)} incident(s):\n")
+        print(correlate.explain(incidents))
+        incident = incidents[0]
+        print(f"\n  working the first one: {incident.incident_id}")
     else:
         if target not in BY_NAME:
-            print(f"  no KPI called {target!r}. Try: python cli.py kpis")
+            print(f"  no KPI called {target!r}. Try: python cli.py kpis, "
+                  f"or 'board' for everything at once")
             return 1
         kpi = get(target)
         reading, verdict = ev.evaluate(kpi)
@@ -419,7 +444,8 @@ def main() -> int:
     sub.add_parser("invariants").set_defaults(fn=cmd_invariants)
     sub.add_parser("incidents").set_defaults(fn=cmd_incidents)
     inv = sub.add_parser("investigate")
-    inv.add_argument("what", help="a KPI name, a breach id, or an incident id")
+    inv.add_argument("what", help="a KPI name, 'board' for everything at once, "
+                                  "a breach id, or an incident id")
     inv.add_argument("--quiet", action="store_true",
                      help="show the steps but not what each tool returned")
     inv.add_argument("--no-colour", action="store_true")

@@ -8,7 +8,7 @@ The third one is the one to use between demos of the agent. It forgets every
 breach and every artifact without making you rebuild the warehouse, so the same
 break can be shown twice in one lesson.
 
-There are four kinds of state in this project, and a reset that forgets one of
+There are five kinds of state in this project, and a reset that forgets one of
 them is the reason a demo works in rehearsal and not in the room:
 
     the warehouse        schema 'teach'    bronze, silver, gold, runs, quarantine
@@ -16,9 +16,15 @@ them is the reason a demo works in rehearsal and not in the room:
     the stream position  on the broker     which messages the consumer has read
     the artifacts        artifacts/        specs and tickets written to disk,
                                            plus the git branches the agent opened
+    the break            mongodb           the field break_it.py moved
 
-None of this can touch the source data. Nothing here has permission to write
-there and nothing here ever tries.
+That last one is the one people forget, and it is the worst to forget: reset the
+warehouse without undoing the break and the pipelines faithfully rebuild a
+broken warehouse, which looks exactly like a reset that did not work.
+
+Undoing the break is the one thing here that writes to a source system, and it
+writes back exactly what it moved. Everything else in this project is read only
+against the sources, and that is enforced rather than promised.
 """
 from __future__ import annotations
 
@@ -63,6 +69,18 @@ def forget_stream_position() -> None:
             print(f"  kafka      forgot the saved position for '{g}'")
     except Exception as e:
         print(f"  kafka      could not clear the offset ({type(e).__name__}: {e})")
+
+
+def put_the_field_back() -> None:
+    """Undo break_it.py, if it is still in place.
+
+    Rebuilding the warehouse without this rebuilds it broken: the pipelines do
+    exactly what they are told, and what they are told to read is still moved.
+    """
+    r = subprocess.run([sys.executable, "break_it.py", "--fix"],
+                       cwd=ROOT, capture_output=True, text=True)
+    line = (r.stdout + r.stderr).strip().splitlines()
+    print(f"  source     {line[0].strip() if line else 'nothing to undo'}")
 
 
 def count_rows(schema: str) -> list[tuple[str, int]]:
@@ -137,6 +155,7 @@ def main() -> int:
         drop(schema)
 
     if SCHEMA in wanted:
+        put_the_field_back()
         setup()                  # recreates 'teach', empty
         forget_stream_position()
     if ONCALL in wanted:
@@ -148,7 +167,7 @@ def main() -> int:
         journal.setup()          # investigations
         forget_artifacts()
 
-    print("\n  back to empty. The source data was never touched.")
+    print("\n  back to empty.")
     print(f"  Next:  {'python cli.py run all' if SCHEMA in wanted else 'python cli.py investigate surge_coverage_pct'}\n")
     return 0
 
