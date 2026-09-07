@@ -141,7 +141,17 @@ CATALOGUE: list[KPI] = [
         unit=" rows",
         judgement="fixed", baseline=0, severity="medium",
         watch_direction="above",
-        sql=f"SELECT count(*)::float FROM {SCHEMA}.quarantine",
+        # The latest run of each pipeline, not every run ever. Quarantine is
+        # append only, so counting the whole table means the number climbs on
+        # every run and never comes back down once something has been fixed.
+        # A signal that cannot return to healthy is not a signal, it is a
+        # counter, and people learn to ignore it.
+        sql=f"""
+            SELECT count(*)::float FROM {SCHEMA}.quarantine
+            WHERE run_id IN (SELECT DISTINCT ON (pipeline) run_id
+                             FROM {SCHEMA}.runs WHERE status = 'success'
+                             ORDER BY pipeline, started_at DESC)
+        """,
         tags=("contracts",),
     ),
 
@@ -269,9 +279,18 @@ CATALOGUE: list[KPI] = [
         # stay under the bar until it has affected a lot of rides.
         judgement="fixed", baseline=100.0, tolerance=1.0, severity="high",
         watch_direction="below",
+        # Measured against what the pipeline was OFFERED, not against what it
+        # wrote. That distinction is the whole KPI. p3 never writes a null
+        # surge: a document it cannot read a surge value from is HELD, so
+        # count(surge)/count(*) over the landed table is 100% by construction
+        # and can never move, however badly the upstream field is renamed.
+        # rows_in and rows_out on the latest run say what actually happened.
         sql=f"""
-            SELECT coalesce(round(100.0 * count(surge) / nullif(count(*), 0), 2), 0)::float
-            FROM {SCHEMA}.bronze_driver_app
+            SELECT coalesce((SELECT round(100.0 * rows_out / nullif(rows_in, 0), 2)
+                             FROM {SCHEMA}.runs
+                             WHERE pipeline = 'p3_bronze_driver_app'
+                               AND status = 'success'
+                             ORDER BY started_at DESC LIMIT 1), 100)::float
         """,
         tags=("coverage", "pricing"),
     ),

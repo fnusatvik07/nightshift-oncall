@@ -712,6 +712,7 @@ specialists into one investigation.
 ![](img/oncall-3-five-agents.png)
 """)
 n.code("""import sys; sys.path.insert(0, '..')
+from nb import run                            # prints a command exactly as a terminal would
 from pipelines.lib.config import dsn, SCHEMA""")
 n.md("""
 ---
@@ -728,15 +729,7 @@ then go looking for numbers that agree with it. Split them and that becomes
 impossible:
 """)
 n.code("""from agent_service.agents import (triage_agent, data_agent, lineage_agent,
-                                    remediation_agent, verifier_agent)
-
-for name, build in [('1 triage', triage_agent), ('2 data detective', data_agent),
-                    ('3 lineage detective', lineage_agent),
-                    ('4 remediation', remediation_agent), ('5 verifier', verifier_agent)]:
-    tools = [t.name for t in build().nodes['tools'].bound._tools_by_name.values()] \\
-        if False else None
-    print(f'{name}')
-
+                                  remediation_agent, verifier_agent)
 from agent_service.tools.warehouse import READ_TOOLS
 from agent_service.tools.lineage import LINEAGE_TOOLS
 from agent_service.tools.signals import SIGNAL_TOOLS
@@ -842,23 +835,58 @@ night and one that costs a few hundred.
 
 Five agents, one breach, no human. This takes a minute or two.
 """)
+n.md("""
+First, break something, so there is a real thing to investigate. This is the
+same release shaped break as notebook 9: the driver app moves a field, nothing
+errors, and a value the pricing team depends on quietly stops arriving.
+""")
+n.code("""run('break_it.py')
+run('cli.py', 'run', 'p7_silver_rides')
+run('cli.py', 'run', 'p8_gold_daily')""")
+n.md("""
+Now measure it. `to_breach` turns a reading into the record the agents receive,
+and `correlate.group` turns one or more breaches into the **incident** that is
+actually investigated. That distinction matters: a pipeline dying breaches six
+signals, and nobody wants six investigations of one cause.
+""")
 n.code("""from agent_service.supervisor import investigate
-from signal_service import store
+from signal_service import correlate, store
+from signal_service.kpis import BY_NAME
 
 kpi = get('surge_coverage_pct')
 reading, verdict = ev.evaluate(kpi)
 breach = ev.to_breach(kpi, reading, verdict)
 
+incident = correlate.group([breach], board_size=len(BY_NAME))[0]
+
 print(breach.one_line())
-print('breached:', verdict.breached)
-if not verdict.breached:
-    print('\\nNot broken. In a terminal: python break_it.py && python cli.py run all')""")
-n.code("""out = investigate(breach)
+print('breached  ', verdict.breached)
+print('incident  ', incident.incident_id, '|', incident.severity,
+      '|', incident.signal_count, 'signal(s)')
+print('grouped   ', incident.correlation)""")
+n.md("""
+Five agents, one incident, no human. This takes a minute or two, and prints
+nothing until it is finished.
+
+**To watch it work, run it from a terminal instead**, where every tool call and
+every verdict is printed as it happens:
+
+```
+python cli.py investigate surge_coverage_pct
+```
+""")
+n.code("""out = investigate(incident)
 
 print('  ' + ' -> '.join(s['tool'] for s in out['steps']))
 print('  waiting for human:', out['waiting_for_human'])
 print()
 print(out['handover'])""")
+n.md("""
+Put the estate back before moving on.
+""")
+n.code("""run('break_it.py', '--fix')
+run('cli.py', 'run', 'p7_silver_rides')
+run('cli.py', 'run', 'p8_gold_daily')""")
 n.md("""
 ---
 
@@ -1186,12 +1214,16 @@ print(f'before: {before["breached"]} breached')
 for s in before['signals']:
     if s['breached']:
         print(f'   {s["kpi"]:26} {s["value"]:,.2f}{s["unit"]}')""")
-n.code("""run = subprocess.run([sys.executable, '../break_it.py'], capture_output=True, text=True,
-                     cwd='..')
-print(run.stdout + run.stderr)
+n.code("""# cwd is the repo root, so the path is 'break_it.py' and not '../break_it.py'.
+# Both of those together point one level above the project.
+r = subprocess.run([sys.executable, 'break_it.py'], capture_output=True, text=True,
+                   cwd='..')
+print(r.stdout + r.stderr)
 
-for mod in ('pipelines.p3_bronze_driver_app', 'pipelines.p7_silver_rides',
-            'pipelines.p8_gold_daily'):
+# Silver and gold only. Re-running the bronze driver app pipeline would read
+# mongodb again and put the surge values straight back, which is a confusing
+# way to discover that the break lives in OUR copy and not in the source.
+for mod in ('pipelines.p7_silver_rides', 'pipelines.p8_gold_daily'):
     subprocess.run([sys.executable, '-m', mod], capture_output=True, cwd='..')
 print('pipelines re-run. Every one of them succeeded.')""")
 n.md("""
@@ -1200,38 +1232,57 @@ looks healthy from every angle except one.
 
 Now wait for the clock. It runs every sixty seconds by default.
 """)
+n.md("""
+What we are waiting for is an **incident**, not a breach. The board raises a
+breach per KPI and then groups them, because one cause can move several numbers
+and nobody wants four investigations of one thing. The incident id is what the
+agent service works with, so it is what we watch for.
+""")
 n.code("""import psycopg
 
-seen = None
+incident_id = None
 for i in range(20):
     with psycopg.connect(dsn()) as c:
-        row = c.execute(f\"\"\"SELECT breach_id, kpi, status FROM oncall.breaches
-                           WHERE kpi = 'surge_coverage_pct'
-                           ORDER BY detected_at DESC LIMIT 1\"\"\").fetchone()
+        row = c.execute(\"\"\"SELECT incident_id, primary_kpi, signal_count, status
+                             FROM oncall.incidents
+                             WHERE primary_kpi = 'surge_coverage_pct'
+                             ORDER BY detected_at DESC LIMIT 1\"\"\").fetchone()
     if row:
-        seen = row
-        print(f'  {i*10:>4}s  the board raised {row[0]}  ({row[2]})')
+        incident_id = row[0]
+        print(f'  {i*6:>4}s  the board raised {row[0]}  '
+              f'({row[2]} signal(s), {row[3]})')
         break
-    print(f'  {i*10:>4}s  nothing yet')
-    time.sleep(10)""")
+    print(f'  {i*6:>4}s  nothing yet')
+    time.sleep(6)
+
+if incident_id is None:
+    print('\\n  Nothing was raised. The usual reason is that the scheduler '
+          'container is not running:\\n  docker compose -f ../platform/docker-compose.yml '
+          'up -d signal-scheduler')""")
 n.md("""
 ## And the agent picked it up without being asked
+
+Nobody called the agent service. The board rang its doorbell the moment it
+recorded the incident, and it started work on a background thread.
 """)
-n.code("""for i in range(30):
-    r = httpx.get(f'{AGENT}/investigations/{seen[0]}', timeout=30)
+n.code("""d = None
+for i in range(40):
+    r = httpx.get(f'{AGENT}/investigations/{incident_id}', timeout=30)
     if r.status_code == 200:
         d = r.json()
-        print(f'  {i*10:>4}s  {d["status"]:20} {d.get("steps") or ""}')
+        print(f'  {i*6:>4}s  {d["status"]:20} {d.get("steps") or ""}')
         if d['status'] in ('done', 'waiting_for_human', 'failed'):
             break
     else:
-        print(f'  {i*10:>4}s  not started')
-    time.sleep(10)""")
-n.code("""print(d.get('handover') or d.get('error'))
+        print(f'  {i*6:>4}s  not started yet')
+    time.sleep(6)""")
+n.code("""print(d.get('handover') or d.get('error') or 'no handover yet')
 print('\\nARTIFACTS')
 for p in d['pages']:            print('   page   ', p['url'] or p['page_id'])
 for t in d['tickets']:          print('   ticket ', t['ticket_id'], t['kind'], t['severity'])
-for c in d['change_requests']:  print('   change ', c['request_id'], c['kind'], c['status'])""")
+for c in d['change_requests']:  print('   change ', c['request_id'], c['kind'], c['status'])
+if not (d['pages'] or d['tickets'] or d['change_requests']):
+    print('   none. Triage decided the breach was not real, and stopped.')""")
 n.md("""
 ---
 
@@ -1248,7 +1299,7 @@ n.md("""
 
 ## Put it back
 """)
-n.code("""print(subprocess.run([sys.executable, '../break_it.py', '--fix'],
+n.code("""print(subprocess.run([sys.executable, 'break_it.py', '--fix'],
                     capture_output=True, text=True, cwd='..').stdout)
 for mod in ('pipelines.p7_silver_rides', 'pipelines.p8_gold_daily'):
     subprocess.run([sys.executable, '-m', mod], capture_output=True, cwd='..')

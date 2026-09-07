@@ -61,7 +61,18 @@ def get_signal(name: str) -> str:
     """One KPI: its current value, its baseline, its owner and what it means."""
     data = _get(f"/signals/{name}")
     if data is None:
-        return f"could not reach the signal service at {SIGNAL_URL}"
+        # The API being down must not stop an investigation, so measure here
+        # instead. Same code, same query, same answer.
+        from signal_service import evaluate as ev
+        from signal_service.kpis import BY_NAME, get as get_kpi
+        if name not in BY_NAME:
+            return f"no KPI called {name!r}"
+        kpi = get_kpi(name)
+        reading, verdict = ev.evaluate(kpi)
+        data = {"kpi": name, "value": verdict.value, "baseline": verdict.baseline,
+                "unit": kpi.unit, "breached": verdict.breached,
+                "owner": kpi.owner, "detail": verdict.detail,
+                "error": reading.error}
     return "\n".join(f"  {k:12} {v}" for k, v in data.items() if v is not None)
 
 
@@ -74,7 +85,15 @@ def get_kpi_definition(name: str) -> str:
     """
     data = _get(f"/kpis/{name}")
     if data is None:
-        return f"could not reach the signal service at {SIGNAL_URL}"
+        from signal_service.kpis import BY_NAME
+        if name not in BY_NAME:
+            return f"no KPI called {name!r}"
+        k = BY_NAME[name]
+        data = {"name": k.name, "title": k.title, "owner": k.owner,
+                "watches": k.watches, "means": k.means, "unit": k.unit,
+                "judgement": k.judgement, "baseline": k.baseline,
+                "tolerance": k.tolerance, "watch_direction": k.watch_direction,
+                "sql": " ".join(k.sql.split())}
     return "\n".join(f"  {k:16} {v}" for k, v in data.items() if v is not None)
 
 
@@ -87,7 +106,8 @@ def get_signal_history(name: str, limit: int = 30) -> str:
     """
     data = _get(f"/signals/{name}/history?limit={limit}")
     if data is None:
-        return f"could not reach the signal service at {SIGNAL_URL}"
+        from signal_service import store
+        data = {"readings": store.recent_readings(name, limit)}
     readings = data.get("readings", [])
     if not readings:
         return f"no readings stored for {name} yet"

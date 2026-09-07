@@ -48,6 +48,7 @@ from events.contract import Incident
 from pipelines.lib.config import dsn
 from signal_service import store
 
+from . import journal
 from .supervisor import investigate, resume
 from .tools.publish import SCHEMA, setup as artifacts_setup
 
@@ -81,27 +82,6 @@ _running: dict[str, str] = {}
 _queued: list[str] = []
 _lock = threading.Lock()
 
-RUNS_DDL = f"""
-CREATE TABLE IF NOT EXISTS {SCHEMA}.investigations (
-    breach_id   TEXT PRIMARY KEY,
-    kpi         TEXT NOT NULL,
-    incident_id TEXT,
-    signals     INT NOT NULL DEFAULT 1,
-    started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    ended_at    TIMESTAMPTZ,
-    status      TEXT NOT NULL DEFAULT 'running',
-                -- running, done, waiting_for_human, failed
-    steps       TEXT,
-    handover    TEXT,
-    error       TEXT
-);
-
--- CREATE TABLE IF NOT EXISTS does nothing when the table already exists, so a
--- new column needs saying out loud. Without this the service starts cleanly and
--- then fails on the first insert, which is the worst of both worlds.
-ALTER TABLE {SCHEMA}.investigations ADD COLUMN IF NOT EXISTS incident_id TEXT;
-ALTER TABLE {SCHEMA}.investigations ADD COLUMN IF NOT EXISTS signals INT NOT NULL DEFAULT 1;
-"""
 
 
 @app.on_event("startup")
@@ -109,35 +89,12 @@ def _startup() -> None:
     try:
         store.setup()
         artifacts_setup()
-        with psycopg.connect(dsn(), autocommit=True) as c:
-            c.execute(RUNS_DDL)
+        journal.setup()
     except Exception as e:                          # noqa: BLE001
         print(f"  could not prepare the oncall schema: {type(e).__name__}: {e}")
 
 
 # ── running one investigation ──────────────────────────────────────────────
-
-def _record_start(incident: Incident) -> None:
-    with psycopg.connect(dsn(), autocommit=True) as c:
-        c.execute(f"""INSERT INTO {SCHEMA}.investigations
-                      (breach_id, kpi, incident_id, signals, status)
-                      VALUES (%s, %s, %s, %s, 'running')
-                      ON CONFLICT (breach_id) DO UPDATE
-                      SET status = 'running', started_at = now(),
-                          ended_at = NULL, error = NULL""",
-                  (incident.incident_id, incident.primary.kpi,
-                   incident.incident_id, incident.signal_count))
-
-
-def _record_end(breach_id: str, status: str, steps: str = "",
-                handover: str = "", error: str = "") -> None:
-    with psycopg.connect(dsn(), autocommit=True) as c:
-        c.execute(f"""UPDATE {SCHEMA}.investigations
-                      SET status = %s, ended_at = now(), steps = %s,
-                          handover = %s, error = %s
-                      WHERE breach_id = %s""",
-                  (status, steps, handover, error or None, breach_id))
-
 
 def run_investigation(incident: Incident) -> None:
     """The work. Runs on a pool thread, waits for a slot, and never raises."""
@@ -158,10 +115,10 @@ def run_investigation(incident: Incident) -> None:
     try:
         # inside the try, so a failure here still releases the slot and still
         # leaves a row saying the attempt happened
-        _record_start(incident)
+        journal.start(incident)
         out = investigate(incident, checkpointer=CHECKPOINTER)
         status = "waiting_for_human" if out["waiting_for_human"] else "done"
-        _record_end(key, status,
+        journal.end(key, status,
                     steps=" -> ".join(s["tool"] for s in out["steps"]),
                     handover=out["handover"])
         store.mark_incident(key, "diagnosed" if status == "done" else "dispatched",
@@ -176,7 +133,7 @@ def run_investigation(incident: Incident) -> None:
         # recording the failure can itself fail. Say so on the way out rather
         # than replacing one exception with another and losing both.
         try:
-            _record_end(key, "failed", error=detail)
+            journal.end(key, "failed", error=detail)
             store.mark_incident(key, "failed", outcome=str(e)[:500])
         except Exception as inner:                  # noqa: BLE001
             print(f"  and the failure could not be recorded: {inner}")
@@ -310,7 +267,7 @@ def resume_investigation(breach_id: str, decision: Decision) -> dict:
 
     out = resume(breach_id, incident, decision.approve, decision.note,
                  checkpointer=CHECKPOINTER)
-    _record_end(breach_id, "done",
+    journal.end(breach_id, "done",
                 steps=" -> ".join(s["tool"] for s in out["steps"]),
                 handover=out["handover"])
     return out

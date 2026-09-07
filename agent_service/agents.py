@@ -33,6 +33,7 @@ way.
 from __future__ import annotations
 
 import os
+import time
 
 from langchain.agents import create_agent
 from langchain.tools import tool
@@ -40,11 +41,12 @@ from pydantic import BaseModel, Field
 
 from events.contract import Incident
 
+from . import live
 from .tools.lineage import LINEAGE_TOOLS
 from .tools.page import CONFLUENCE_TOOLS
 from .tools.publish import PUBLISH_TOOLS
 from .tools.verify import VERIFY_TOOLS
-from .tools.warehouse import READ_TOOLS
+from .tools.warehouse import READ_TOOLS, quarantine_sample
 from .tools.signals import SIGNAL_TOOLS
 
 MODEL = os.environ.get("ONCALL_MODEL", "openai:gpt-5.4-mini")
@@ -192,8 +194,16 @@ A method that works, in this order:
   1 look at the run log first. A pipeline that did not run leaves perfectly
     valid rows behind, and every value check passes. Rule that out before
     anything else.
-  2 look at what is being held. Quarantine is the loudest evidence in the
-    warehouse, and it comes with the reason attached and the payload intact.
+  2 look at what is being held, with quarantine_summary AND quarantine_sample.
+    Quarantine is the loudest evidence in the warehouse, and it comes with the
+    reason attached and the payload intact.
+
+    Read the payload. This matters more than it looks: a record that was HELD
+    never reached a table, so no query over the landed rows can tell you
+    anything about it. If rows_in is larger than rows_out, the rows that
+    explain the incident are in quarantine and NOWHERE ELSE, and the held
+    payload is the only place the version, the tenant or the field path is
+    written down.
   3 profile the column the KPI is about. How many rows, how many missing, how
     many distinct.
   4 split it. By day, by version, by source, by whatever column exists. The
@@ -202,6 +212,11 @@ A method that works, in this order:
 
 Quote real numbers. "Many rows are null" is not evidence. "40,000 of 84,689,
 all of them since 2026-08-19" is.
+
+Never name a version, a date or a field path you have not read out of a query
+result. If the landed rows cannot tell you which version is affected, say that,
+and go and read the held payloads instead of picking the version that seems
+likely.
 
 Say so plainly when the data looks fine. That is a useful finding, and it moves
 the investigation to the pipeline rather than the rows."""
@@ -265,41 +280,63 @@ REMEDIATION_PROMPT = """You turn a diagnosis into something a person can act on.
 
 You change nothing. You produce artifacts, and a human decides.
 
-ALWAYS, without exception:
-  publish_incident_page  the Confluence page: what happened, a diagram of where
-              it breaks, the evidence with the real queries and their real
-              output, what it means and what to do. Write it for the owner, who
-              was asleep and has never read this code. Do this even when you are
-              not confident, and say so in the confidence field.
-              If it reports that Confluence is not configured, use write_spec
-              instead so the diagnosis is at least kept locally.
-  raise_ticket  so it is somebody's, with a severity and an owner.
+THE ORDER MATTERS. Work through these steps in this order, because each one
+feeds the next, and the page is written LAST so that it can carry everything.
 
-THEN, depending on what the fix actually is:
+STEP 1 · If the fix is code, propose it. Do this FIRST.
 
-  If the fix is a CODE change, use propose_code_change. It opens a branch and a
-  pull request in an isolated checkout. It never merges and it never touches
-  the main branch. Make the change as small as the diagnosis allows: one line
-  that adds a known path beats a refactor nobody asked for. Read the file first
-  with read_source and copy the exact text you are replacing.
+  The lineage detective named a file and said what that file does wrong. That
+  makes this a CODE change, and propose_code_change is not optional. Describing
+  the change in prose and stopping there is how this agent fails: a page that
+  says "expand the surge extraction" and no branch leaves a person doing the
+  work you were woken up to do.
 
-  Then put it on the page. propose_code_change hands you back a diff and, when
-  a remote exists, a pull request URL. Pass BOTH to publish_incident_page as
-  change_diff and pull_request, and describe the change in words in
-  proposed_change.
+  read_source the file first and copy the exact text you are replacing,
+  character for character, including its indentation. Make the change as small
+  as the diagnosis allows: one line that adds a known path beats a refactor
+  nobody asked for.
 
-  If no pull request could be opened, that changes nothing about your job: fill
-  in proposed_change and change_diff anyway. A reader who has to work the fix
-  out again from the evidence has been given a diagnosis, not a page.
+  If the change involves a field name, a path or a value, READ IT. Do not infer
+  it from the diagnosis and do not pick the name that seems likely. Held records
+  keep the original document, so quarantine_sample shows you the real shape.
+  A pull request with a plausible but wrong field name is worse than no pull
+  request: it looks reviewed, it merges, and the number does not move.
 
-  If the fix would change DATA, use request_db_change. That tool runs nothing.
-  It records the statement, estimates the blast radius, states how to reverse
-  it, and stops for a human. Never propose a data change without saying how to
-  undo it.
+  propose_code_change opens a branch and a pull request in an isolated
+  checkout. It never merges and it never touches the main branch, so proposing
+  one costs nothing and refusing to propose one costs a person an afternoon.
 
-  If you do not know the fix, that is a legitimate outcome. The page and the
-  ticket are still worth having: a person arriving at a diagnosis three hours
-  early, with the queries already run, is the point.
+  Keep the diff and the pull request URL it hands back. You need both in step 3.
+
+  If the fix would change DATA rather than code, use request_db_change instead.
+  It runs nothing. It records the statement, estimates the blast radius, states
+  how to reverse it, and stops for a human. Never propose a data change without
+  saying how to undo it.
+
+  If you genuinely do not know the fix, that is a legitimate outcome. Say so,
+  and carry on to step 2. A person arriving at a diagnosis three hours early,
+  with the queries already run, is still the point.
+
+STEP 2 · raise_ticket, so it is somebody's, with a severity and an owner.
+
+  kind is code_change if you proposed one in step 1, db_change if you requested
+  a data change, and investigate only if you could not work out the fix. The
+  ticket must not say investigate when you have opened a pull request.
+
+STEP 3 · publish_incident_page, last, carrying everything.
+
+  What happened, a diagram of where it breaks, the evidence with the real
+  queries and their real output, what it means, and what to do. Write it for
+  the owner, who was asleep and has never read this code.
+
+  Pass the diff from step 1 as change_diff, the pull request URL as
+  pull_request, and describe the change in words in proposed_change. A page
+  that describes a fix but does not link the branch makes the reader do the
+  work twice.
+
+  Do this even when you are not confident, and say so in the confidence field.
+  If it reports that Confluence is not configured, use write_spec instead so
+  the diagnosis is at least kept locally.
 
 Rules you do not get to break:
   never claim something is fixed. You proposed. Somebody else decides.
@@ -310,9 +347,12 @@ Rules you do not get to break:
 def remediation_agent():
     return create_agent(
         model=MODEL,
-        # it may read the file it is about to propose changing, and nothing else
+        # It may read the file it is about to propose changing, and it may look
+        # at a held record. Nothing else, and nothing that writes. Reading the
+        # held document matters: it is the only place the real field name is
+        # written down, and a fix that names the wrong field is worse than none.
         tools=[*CONFLUENCE_TOOLS, *PUBLISH_TOOLS,
-               LINEAGE_TOOLS[1], LINEAGE_TOOLS[4]],
+               LINEAGE_TOOLS[1], LINEAGE_TOOLS[4], quarantine_sample],
         system_prompt=REMEDIATION_PROMPT,
         response_format=RemediationVerdict,
         name="remediation",
@@ -381,12 +421,39 @@ def verifier_agent():
 # the fifth agent inheriting four agents' worth of noise.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _run(agent, instruction: str) -> str:
-    result = agent.invoke({"messages": [{"role": "user", "content": instruction}]})
-    structured = result.get("structured_response")
+def _run(agent, instruction: str, name: str = "", asks: str = "") -> str:
+    """Run one specialist, reporting what it does as it does it.
+
+    The reporting is the only reason this is not a one line function. In a
+    service it costs nothing, because the installed reporter says nothing. In a
+    classroom it is the difference between watching an investigation and
+    watching a blank terminal.
+    """
+    reporter = live.get()
+    reporter.agent_start(name, asks)
+    started = time.time()
+
+    seen = 0
+    result = None
+    # stream_mode="values" hands back the whole state after each step, so we can
+    # print tool calls and their results as they happen rather than at the end
+    for state in agent.stream({"messages": [{"role": "user", "content": instruction}]},
+                              stream_mode="values"):
+        result = state
+        messages = state.get("messages", [])
+        for m in messages[seen:]:
+            for call in getattr(m, "tool_calls", None) or []:
+                reporter.tool_call(name, call["name"], call.get("args") or {})
+            if type(m).__name__ == "ToolMessage":
+                reporter.tool_result(name, getattr(m, "name", ""), m.content)
+        seen = len(messages)
+
+    structured = (result or {}).get("structured_response")
+    reporter.agent_done(name, structured, time.time() - started)
+
     if structured is not None:
         return structured.model_dump_json(indent=2)
-    return result["messages"][-1].content
+    return result["messages"][-1].content if result else ""
 
 
 def build_subagent_tools(incident: Incident):
@@ -412,13 +479,15 @@ def build_subagent_tools(incident: Incident):
         "Decide whether this breach is real and worth investigating, and whose it is. "
         "Call this first, always. If it says the breach is not real, stop."))
     def call_triage() -> str:
-        return _run(triage_agent(), context + "\nIs this real, and whose is it?")
+        return _run(triage_agent(), context + "\nIs this real, and whose is it?",
+                    "triage", "is this real?")
 
     @tool("investigate_data", description=(
         "Find out what is actually wrong with the rows. Queries the warehouse. "
         "Call this after triage says the breach is real."))
     def call_data(focus: str = "") -> str:
-        return _run(data_agent(), context + f"\nWhat is wrong with the data? {focus}")
+        return _run(data_agent(), context + f"\nWhat is wrong with the data? {focus}",
+                    "data_detective", "what is wrong with the rows?")
 
     @tool("investigate_lineage", description=(
         "Find where the wrong value entered the platform. Reads pipeline code and "
@@ -426,7 +495,8 @@ def build_subagent_tools(incident: Incident):
     def call_lineage(data_finding: str) -> str:
         return _run(lineage_agent(), context +
                     f"\nThe data detective found:\n{data_finding}\n\n"
-                    f"Where did this enter the platform?")
+                    f"Where did this enter the platform?",
+                    "lineage_detective", "where did it enter?")
 
     @tool("remediate", description=(
         "Produce the artifacts: always a page and a ticket, plus a pull request for a "
@@ -436,13 +506,15 @@ def build_subagent_tools(incident: Incident):
         return _run(remediation_agent(), context +
                     f"\nThe data detective found:\n{data_finding}\n\n"
                     f"The lineage detective found:\n{lineage_finding}\n\n"
-                    f"Produce the artifacts. Change nothing.")
+                    f"Produce the artifacts. Change nothing.",
+                    "remediation", "what is the smallest fix?")
 
     @tool("verify", description=(
         "Re-read the number and report whether it came back. Call this last."))
     def call_verifier(what_was_proposed: str) -> str:
         return _run(verifier_agent(), context +
                     f"\nWhat was proposed:\n{what_was_proposed}\n\n"
-                    f"Has the number come back?")
+                    f"Has the number come back?",
+                    "verifier", "did it actually work?")
 
     return [call_triage, call_data, call_lineage, call_remediation, call_verifier]

@@ -148,8 +148,21 @@ def check_file_on_disk(path: str, expected_text: str) -> str:
         target.relative_to(ROOT)
     except ValueError:
         return f"REFUSED: {path!r} is outside the project."
+
+    # Agents name a pipeline the way people do, by its pipeline name rather
+    # than its path. Answering "p3_bronze_driver_app does not exist" to that is
+    # technically true and completely useless, and it makes a verifier report a
+    # fix as unapplied for the wrong reason. So resolve the obvious spellings.
     if not target.is_file():
-        return f"{path} does not exist."
+        stem = pathlib.Path(path).name.removesuffix(".py")
+        for guess in (ROOT / "pipelines" / f"{stem}.py", ROOT / f"{stem}.py"):
+            if guess.is_file():
+                target, path = guess, str(guess.relative_to(ROOT))
+                break
+        else:
+            listing = ", ".join(sorted(f.stem for f in (ROOT / "pipelines").glob("p*.py")))
+            return (f"{path} does not exist. The pipelines are in pipelines/: "
+                    f"{listing}")
 
     body = target.read_text()
     if expected_text in body:

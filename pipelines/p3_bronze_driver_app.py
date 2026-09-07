@@ -22,6 +22,7 @@ RUN IT
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 import psycopg
@@ -113,6 +114,24 @@ def dig(doc: dict, path: tuple):
     return cur
 
 
+def whole(doc: dict, limit: int = 4000) -> dict:
+    """The document as it arrived, JSON safe, so it can be stored and read back.
+
+    ObjectId and datetime do not survive json, so they become strings. Nothing
+    else is touched, and in particular nothing nested is flattened: the nested
+    shape IS the evidence.
+    """
+    def plain(v):
+        if isinstance(v, dict):
+            return {k: plain(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [plain(x) for x in v[:50]]
+        return v if isinstance(v, (int, float, bool, type(None))) else str(v)[:400]
+
+    out = plain(doc)
+    return out if len(json.dumps(out)) <= limit else {"truncated": str(doc)[:limit]}
+
+
 def surge_of(doc: dict):
     """The surge value, from whichever field this app version happened to use."""
     for path in SURGE_PATHS:
@@ -165,8 +184,18 @@ def run(limit: int = 40000) -> int:
 
             surge = surge_of(doc)
             if surge is None:
+                # Hold the WHOLE document, structure intact.
+                #
+                # An earlier version kept the first eight fields, flattened to
+                # strings. It looked tidy and it threw away the only thing worth
+                # keeping: the nested branch the value moved to. Somebody, or
+                # some agent, reading this row a day later could see that surge
+                # was missing and had no way to find out where it had gone.
+                #
+                # A held record exists to answer "what did it actually look
+                # like". Trim it if it is enormous, never reshape it.
                 r.quarantine(
-                    payload={k: str(v)[:80] for k, v in list(doc.items())[:8]},
+                    payload=whole(doc),
                     reason=("no surge value at any known path: "
                             + ", ".join(".".join(p) for p in SURGE_PATHS)),
                     key=str(doc.get("event_id") or doc.get("_id")))
@@ -190,10 +219,25 @@ def run(limit: int = 40000) -> int:
         #
         # The lesson is not "batch your writes". It is: when something is
         # inexplicably slow, count how many times you are opening a connection.
-        if rows:
-            with psycopg.connect(dsn(), autocommit=False) as c, c.cursor() as cur:
+        # ══ REPLACE the snapshot, do not add to it ══
+        #
+        # This pipeline copies the newest 40,000 documents, so the batch it just
+        # read IS the whole table. Inserting on top of what is already there
+        # would leave rows for documents that have stopped arriving, and that is
+        # not a harmless bit of extra history: when a release moves a field and
+        # its documents start being HELD, the old rows stay behind and the table
+        # goes on claiming those records landed cleanly. The run log says 9,869
+        # were held and the table says everything is fine, and the person
+        # looking at it believes the table.
+        #
+        # DELETE and INSERT in ONE transaction. Either the new snapshot is
+        # there or the old one still is; there is no moment where the table is
+        # empty for somebody else to read.
+        with psycopg.connect(dsn(), autocommit=False) as c, c.cursor() as cur:
+            cur.execute(f"DELETE FROM {SCHEMA}.{TABLE}")
+            if rows:
                 cur.executemany(INSERT, rows)
-                c.commit()
+            c.commit()
 
         r.rows_out = len(rows)
         r.message = f"surge read from {len(SURGE_PATHS)} known field paths"

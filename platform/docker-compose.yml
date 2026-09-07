@@ -83,7 +83,7 @@ services:
       # for a course dataset.
       - --memory 1G
       - --reserve-memory 0M
-    ports: ["${REDPANDA_PORT:-19092}:19092", "${REDPANDA_ADMIN_PORT:-9644}:9644"]
+    ports: ["${REDPANDA_PORT:-19092}:19092", "${REDPANDA_ADMIN_PORT:-19644}:9644"]
     volumes:
       - rpdata:/var/lib/redpanda/data
     healthcheck:
@@ -238,6 +238,7 @@ services:
     restart: unless-stopped
     command: >
       uvicorn signal_service.api:app --host 0.0.0.0 --port 8091
+      --reload --reload-dir /app/signal_service --reload-dir /app/events
     env_file: [../.env]
     environment: &service_env
       POSTGRES_HOST: postgres
@@ -290,6 +291,7 @@ services:
     restart: unless-stopped
     command: >
       uvicorn agent_service.worker:app --host 0.0.0.0 --port 8092
+      --reload --reload-dir /app/agent_service --reload-dir /app/events
     env_file: [../.env]
     environment: *service_env
     volumes:

@@ -69,7 +69,14 @@ SIGNALS = [
         means="Records a contract refused. Not lost, not wrong, just not published. "
               "A number above zero here means the warehouse is behind reality.",
         unit="rows", fixed_baseline=0,
-        current_sql=f"SELECT count(*) FROM {SCHEMA}.quarantine"),
+        # The latest run of each pipeline, not every run ever. Quarantine is
+        # append only, so counting the whole table means the number climbs on
+        # every run and never comes back down once something has been fixed.
+        current_sql=f"""
+            SELECT count(*) FROM {SCHEMA}.quarantine
+            WHERE run_id IN (SELECT DISTINCT ON (pipeline) run_id
+                             FROM {SCHEMA}.runs WHERE status = 'success'
+                             ORDER BY pipeline, started_at DESC)"""),
     Signal(
         name="rides_per_day", owner="operations", watches=f"{SCHEMA}.gold_daily",
         means="Rides on the most recent day, against the days before it. Catches a "
@@ -101,12 +108,21 @@ SIGNALS = [
               AND t.trip_date = (SELECT max(trip_date) FROM {SCHEMA}.bronze_trips)"""),
     Signal(
         name="surge_missing_pct", owner="pricing", watches=f"{SCHEMA}.bronze_driver_app",
-        means="Share of driver app records with no surge value. This is the one that "
-              "moves when the mobile team renames a field without telling anybody.",
+        means="Share of driver app records that arrived without a surge value we "
+              "could read. This is the one that moves when the mobile team "
+              "renames a field without telling anybody.",
         unit="%", fixed_baseline=0,
+        # Measured from the run log, not from the landed table. p3 never writes
+        # a null surge: a document it cannot read is HELD, so counting nulls in
+        # the table gives zero however badly the field is renamed. rows_in minus
+        # rows_out is what actually went missing.
         current_sql=f"""
-            SELECT coalesce(round(100.0 * count(*) FILTER (WHERE surge IS NULL)
-                   / nullif(count(*), 0), 3), 0) FROM {SCHEMA}.bronze_driver_app"""),
+            SELECT coalesce((SELECT round(100.0 * (rows_in - rows_out)
+                                          / nullif(rows_in, 0), 3)
+                             FROM {SCHEMA}.runs
+                             WHERE pipeline = 'p3_bronze_driver_app'
+                               AND status = 'success'
+                             ORDER BY started_at DESC LIMIT 1), 0)"""),
 ]
 
 Z_THRESHOLD = 4.0
