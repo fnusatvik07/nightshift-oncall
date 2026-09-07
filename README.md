@@ -390,7 +390,6 @@ nightshift-oncall/
 | [signals.md](docs/signals.md) | what a signal is, and what makes a useless one |
 | [orchestration.md](docs/orchestration.md) | Airflow, DAGs, and what an orchestrator does not do |
 | [data.md](docs/data.md) | the data dictionary, and the incidents hidden in the seed |
-| [teaching.md](docs/teaching.md) | running this as a class, session by session |
 | [troubleshooting.md](docs/troubleshooting.md) | when it does not work |
 
 <br>

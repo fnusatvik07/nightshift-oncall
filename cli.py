@@ -20,6 +20,7 @@
     python cli.py incidents           what has breached, and what came of it
     python cli.py investigate <kpi>   run the agents, showing every step live
     python cli.py investigate board   group everything red, work the worst one
+    python cli.py scenario <name>     one whole incident, told in seven steps
 
 Everything is safe to run twice. Everything can be undone with `reset`.
 """
@@ -408,6 +409,17 @@ def _print_artifacts(incident_id: str, C) -> None:
     print()
 
 
+def cmd_scenario(a) -> int:
+    """One incident, start to finish, in seven numbered steps.
+
+    The join between `signals` and `investigate` is where the interesting thing
+    happens and it is the one part neither command shows: what exactly the board
+    writes down, and what exactly crosses to the agents. This walks all of it.
+    """
+    import scenario
+    return scenario.run(a.name, no_agent=a.no_agent)
+
+
 def cmd_reset(a) -> int:
     flags = ["--warehouse"] if a.warehouse else ["--oncall"] if a.oncall else []
     return sh("reset.py", *flags)
@@ -450,6 +462,11 @@ def main() -> int:
                      help="show the steps but not what each tool returned")
     inv.add_argument("--no-colour", action="store_true")
     inv.set_defaults(fn=cmd_investigate)
+    sc = sub.add_parser("scenario")
+    sc.add_argument("name", nargs="?", default="surge", help="surge, zones or stale")
+    sc.add_argument("--no-agent", action="store_true",
+                    help="stop after the handover, before the agents run")
+    sc.set_defaults(fn=cmd_scenario)
     rs = sub.add_parser("reset")
     rs.add_argument("--warehouse", action="store_true",
                     help="reset only the data, keeping incidents and artifacts")

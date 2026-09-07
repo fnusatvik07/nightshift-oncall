@@ -190,23 +190,21 @@ break-stale:
 # genuinely different: a document store, a stale dimension, and a job that did
 # not run. Nothing about the investigation is scripted.
 
-# 1 · pricing · a field moved. Ends in a pull request and a page
-scenario-surge: rebuild reset-oncall break-surge
-    {{PY}} cli.py investigate surge_coverage_pct
-    {{PY}} cli.py incidents
+# 1 · pricing · a field moved. Seven steps, ending in a pull request and a page
+scenario-surge: rebuild reset-oncall
+    {{PY}} cli.py scenario surge
 
-# 2 · operations · a stale dimension. The code is right, the DATA is wrong
-scenario-zones: rebuild reset-oncall break-zones
-    {{PY}} cli.py investigate zone_coverage_pct
-    {{PY}} cli.py incidents
+# the same, stopping at the handover so you can talk before the agents run
+scenario-surge-pause: rebuild reset-oncall
+    {{PY}} cli.py scenario surge --no-agent
+
+# 2 · operations · a stale dimension. The code is right, the DATA is late
+scenario-zones: rebuild reset-oncall
+    {{PY}} cli.py scenario zones
 
 # 3 · data-platform · a job did not run. FIVE signals, grouped into ONE incident
-scenario-stale: rebuild reset-oncall break-stale
-    # `investigate board` rather than a KPI name, because that is the whole point
-    # of this one: evaluate everything, group it, and work the single cause.
-    # Name one KPI here and you hide the thing the scenario exists to show.
-    {{PY}} cli.py investigate board
-    {{PY}} cli.py incidents
+scenario-stale: rebuild reset-oncall
+    {{PY}} cli.py scenario stale
 
 # all three, back to back. Three incidents, three different pages
 scenario-all: scenario-surge scenario-zones scenario-stale
